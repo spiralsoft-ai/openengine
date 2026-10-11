@@ -161,6 +161,7 @@ from engine.ports import (
     UserInputAnswer,
     WorkspaceState,
 )
+from engine.runtime.repositories import RepositoryRegistry
 from engine.runtime.change_requests import change_request, pull_request_url, remote_project
 from engine.runtime import (
     AgentSession,
@@ -1106,7 +1107,7 @@ def create_app(
     communications_channel: str = "",
     public_url: str = "",
     work_orders: WorkOrdersConfig = WorkOrdersConfig(),
-    repos: Mapping[str, str] | None = None,
+    repos: Mapping[str, str] | RepositoryRegistry | None = None,
     repo_modes: Mapping[str, str] | None = None,
     trusted_repos: Collection[str] = (),
     login_repositories: Sequence[str] = (),
@@ -1137,19 +1138,9 @@ def create_app(
         else {}
     )
     surface = _GraphSurface()
-    # The checkouts `engine init` onboarded as disconnected, as the dropdown
-    # sends them back: every WorkOrder on one runs disconnected.
-    disconnected_repositories = frozenset(
-        Path(path).expanduser().resolve()
-        for name, path in (repos or {}).items()
-        if (repo_modes or {}).get(name) == ForgeMode.DISCONNECTED
-    )
-
-    # And those `[trusted_repos]` names, whose WorkOrders are auto-approved.
-    trusted_repositories = frozenset(
-        Path(path).expanduser().resolve()
-        for name, path in (repos or {}).items()
-        if name in (trusted_repos or ())
+    repository_registry = repos if isinstance(repos, RepositoryRegistry) else RepositoryRegistry(
+        repos, repo_modes, trusted_repos,
+        projects=repository_projects or {}, login_repositories=login_repositories,
     )
 
     async def in_repositories(repository: str, checkouts: frozenset[Path]) -> bool:
@@ -1168,7 +1159,7 @@ def create_app(
 
     async def repository_mode(repository: str) -> ForgeMode | None:
         """The mode `[repo_modes]` fixes for WorkOrders on `repository`, if any."""
-        if await in_repositories(repository, disconnected_repositories):
+        if await in_repositories(repository, repository_registry.snapshot.disconnected):
             return ForgeMode.DISCONNECTED
         return None
 
@@ -1818,13 +1809,14 @@ def create_app(
 
     async def config(request: Request) -> JSONResponse:
         visible = await github_login.visible_repositories(request)
+        configured = repository_registry.snapshot
         repository_choices = [
             {
                 "name": name,
                 "path": str(Path(path).expanduser().resolve()),
-                **({"mode": mode} if (mode := (repo_modes or {}).get(name)) else {}),
+                **({"mode": mode} if (mode := configured.repo_modes.get(name)) else {}),
             }
-            for name, path in (repos or {}).items()
+            for name, path in configured.repos.items()
         ] or [{"name": f". ({Path.cwd()})", "path": "."}]
         return JSONResponse(
             {
@@ -2002,7 +1994,7 @@ def create_app(
             if defer_notifications and origin is not None:
                 deferred_graph_notifications[snapshot.run_id] = origin
             seed_graph_progress(runtime, snapshot)
-            if approval_policy.auto_approve or await in_repositories(repository, trusted_repositories):
+            if approval_policy.auto_approve or await in_repositories(repository, repository_registry.snapshot.trusted):
                 topology = runtime.topology(GraphId(str(graph.graph_id)))
                 if topology is not None:
                     for node in topology.nodes:
@@ -2898,7 +2890,7 @@ def create_app(
         if not _is_local_request(request):
             return _error("forbidden", 403)
         repositories = [
-            str(Path(path).expanduser().resolve()) for path in (repos or {}).values()
+            str(Path(path).expanduser().resolve()) for path in repository_registry.snapshot.repos.values()
         ] or ["."]
         try:
             loop = parse_loop(
@@ -3540,7 +3532,7 @@ def create_app(
         projects by that port, which a remote does not carry, so the comparison
         ignores it.
         """
-        for name, path in (repos or {}).items():
+        for name, path in repository_registry.snapshot.repos.items():
             if name.lower() == project.lower():
                 return str(Path(path).expanduser())
         authority, _, rest = project.partition("/")
@@ -3566,7 +3558,7 @@ def create_app(
         # to `git -C` by the worktree provider, which does not expand `~`.
         paths = dict.fromkeys(
             str(Path(path).expanduser())
-            for path in (*(repos or {}).values(), work_orders.repository) if path
+            for path in (*repository_registry.snapshot.repos.values(), work_orders.repository) if path
         )
         lookups = {path: asyncio.create_task(origin(path)) for path in paths}
         # The checkouts are asked at once and share one deadline, so stalled
@@ -3766,7 +3758,7 @@ def create_app(
 
     async def github_react(request: FeedbackRequest, content: str) -> None:
         repository = request.origin.channel.removeprefix("github:")
-        if disconnected_repositories:
+        if repository_registry.snapshot.disconnected:
             checkout = await github_checkout(repository)
             if await repository_mode(checkout) == ForgeMode.DISCONNECTED:
                 return
@@ -4144,7 +4136,7 @@ def create_app(
         ).geturl())
         repository = found.project if found is not None else delivery.repository
         may_write: bool | None = None
-        if sender_id and repository.lower() in access_repositories:
+        if sender_id and repository.lower() in access_repositories():
             # The same per-user answer, and cache, that scopes the web app:
             # a sender who was just checked there, or here, is not asked again.
             async with asyncio.timeout(GITHUB_AUTHORIZATION_TIMEOUT_SECONDS):
@@ -4265,9 +4257,12 @@ def create_app(
     # Anyone who can push to one of the repositories this deployment works on
     # may sign in: the webhook repository and the configured checkouts. What
     # they see is the WorkOrders of the repositories they can push to.
-    access_repositories = tuple(dict.fromkeys(
-        project.lower() for project in (github_repository, *github_repositories, *login_repositories) if project
-    ))
+    def access_repositories() -> tuple[str, ...]:
+        return tuple(dict.fromkeys(
+            project.lower() for project in (
+                github_repository, *github_repositories, *repository_registry.snapshot.login_repositories
+            ) if project
+        ))
 
     async def github_repository_access(user_id: int, login: str) -> dict[str, bool | None]:
         """Whether the user can push to each of this deployment's repositories.
@@ -4287,19 +4282,15 @@ def create_app(
                 log.exception("could not check whether %s can write to %s", login, project)
                 return None
 
-        answers = await asyncio.gather(*(check(project) for project in access_repositories))
-        return dict(zip(access_repositories, answers, strict=True))
+        projects = access_repositories()
+        answers = await asyncio.gather(*(check(project) for project in projects))
+        return dict(zip(projects, answers, strict=True))
 
     # The GitHub repository behind each value a run's `repository` takes: a
     # `[repos]` name, the checkout path the web form sends, or `.`. A run
     # started from GitHub already names its `owner/repo`.
-    run_projects: dict[str, str] = {}
-    for name, project in (repository_projects or {}).items():
-        path = str(Path((repos or {}).get(name, name)).expanduser().resolve())
-        run_projects[name] = run_projects[path] = project.lower()
-
     def run_project(repository: str) -> str | None:
-        project = run_projects.get(repository)
+        project = repository_registry.snapshot.run_projects.get(repository)
         if project is None and "/" in repository and not repository.startswith(("/", ".", "~")):
             project = repository.lower()
         return project
@@ -4344,7 +4335,7 @@ def create_app(
         if ref is None:
             return None
         if ref not in branch_projects:
-            for name, path in {".": ".", **(repos or {})}.items():
+            for name, path in {".": ".", **repository_registry.snapshot.repos}.items():
                 project = run_project(name)
                 if project is None:
                     continue
@@ -4402,7 +4393,7 @@ def create_app(
         answers for public github.com repositories; the rest read as unknown
         (None), as does any lookup that fails.
         """
-        projects = [project for project in access_repositories if project.count("/") == 1]
+        projects = [project for project in access_repositories() if project.count("/") == 1]
         if not projects:
             return {}
 

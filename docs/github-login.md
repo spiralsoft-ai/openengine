@@ -200,3 +200,10 @@ a particular process or token from the code alone: correlate its URL and run
 with process logs. No historical run ID, PR URL, or credential audit was
 available for this change; the old web keychain and CLI paths could both use a
 personal identity, whereas the worker used only its configured token.
+
+Repository configuration is live within the daemon. Adding a GitHub checkout to
+the in-memory repository registry immediately extends sign-in access to that
+project's writers, just as restarting with that checkout in `[repos]` would.
+Its project also participates in repository visibility checks immediately.
+Registry updates do not write the configuration file; persistence is a separate
+operation.

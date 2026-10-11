@@ -34,6 +34,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
 import yaml
+from engine.runtime.repositories import RepositoryRegistry
 from engine.domain import MODE_INPUT, ApprovalDecision, ApprovalId, ForgeMode, RunId
 from engine.graph_runtime import (
     AmbiguousExecutionError,
@@ -217,7 +218,7 @@ class GraphService:
         start: StartRun | None = None,
         session_config: Mapping[str, object] | None = None,
         default_repository: str = "",
-        repositories: Mapping[str, str] | None = None,
+        repositories: Mapping[str, str] | RepositoryRegistry | None = None,
         default_base_ref: str = "origin/HEAD",
         model_tiers: Mapping[str, Mapping[str, str]] | None = None,
         allow_python: bool = True,
@@ -236,7 +237,10 @@ class GraphService:
         self._start = start or self._start_directly
         self._session_config = session_config
         self._default_repository = default_repository
-        self._repositories = dict(repositories or {})
+        self._repositories = (
+            repositories if isinstance(repositories, RepositoryRegistry)
+            else RepositoryRegistry(repositories, projects={})
+        )
         self._default_base_ref = default_base_ref
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._tick_seconds = tick_seconds
@@ -1288,10 +1292,11 @@ class GraphService:
         """
         if not repository or repository == ".":
             return repository
-        if repository in self._repositories:
-            return str(Path(self._repositories[repository]).expanduser())
+        repos = self._repositories.snapshot.repos
+        if repository in repos:
+            return str(Path(repos[repository]).expanduser())
         folded = repository.lower().removesuffix(".git")
-        for name, path in self._repositories.items():
+        for name, path in repos.items():
             if name.lower() == folded:
                 return str(Path(path).expanduser())
         return repository

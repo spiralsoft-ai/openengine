@@ -37,6 +37,7 @@ from langgraph_acp.providers import (
     OpenCodeACPProvider,
 )
 
+from engine.runtime.repositories import RepositoryRegistry
 from engine.adapters.agent_runner.acp import (
     READ_ONLY_TOOLS,
     allowed_tools_for,
@@ -398,7 +399,7 @@ def build_graph_service(
     settings: Settings,
     *,
     default_repository: str = "",
-    repositories: Mapping[str, str] | None = None,
+    repositories: Mapping[str, str] | RepositoryRegistry | None = None,
 ) -> Callable[[LangGraphRuntime, StartRun], GraphService]:
     config = settings.engine_config
     """How the daemon offers registered graphs, once its graph engine is open.
