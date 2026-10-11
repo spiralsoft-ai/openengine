@@ -1,6 +1,6 @@
 [project]
 name = "engine-worker"
-version = "1.6.0"
+version = "1.7.0"
 description = "Worker: executes engine commands against real capabilities."
 requires-python = ">=3.11"
 # Composition root: the only layer allowed to depend on concrete adapters.

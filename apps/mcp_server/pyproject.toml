@@ -1,6 +1,6 @@
 [project]
 name = "engine-mcp-server"
-version = "1.6.0"
+version = "1.7.0"
 description = "Authenticated remote MCP ingress for immediate OpenEngine work orders."
 requires-python = ">=3.11"
 dependencies = ["mcp>=2,<3", "httpx>=0.28", "PyJWT[crypto]>=2.10,<3", "starlette>=0.52", "uvicorn>=0.35", "python-dotenv>=1.0"]

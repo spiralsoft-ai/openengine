@@ -1,6 +1,6 @@
 [project]
 name = "engine-adapter-state-store-memory"
-version = "1.6.0"
+version = "1.7.0"
 description = "State Store capability, in process. Real behaviour, no durability."
 requires-python = ">=3.11"
 # Imports `engine.ports` and `engine.domain` only -- it implements a port, it

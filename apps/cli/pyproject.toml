@@ -1,6 +1,6 @@
 [project]
 name = "engine-cli"
-version = "1.6.0"
+version = "1.7.0"
 description = "Terminal control surface for a local or remote OpenEngine service."
 requires-python = ">=3.11"
 dependencies = ["engine-runtime", "engine-graph-cli", "platformdirs>=4"]

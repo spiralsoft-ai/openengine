@@ -1,6 +1,6 @@
 [project]
 name = "engine-runtime"
-version = "1.6.0"
+version = "1.7.0"
 description = "Dispatches engine commands to capability implementations."
 requires-python = ">=3.11"
 # `engine-graph-runtime` is the contract, not an engine. The loader only needs

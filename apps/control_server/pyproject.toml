@@ -1,6 +1,6 @@
 [project]
 name = "engine-control-server"
-version = "1.6.0"
+version = "1.7.0"
 description = "Control server: ingress and composition root for the agent engine."
 requires-python = ">=3.11"
 # Composition root: the only layer allowed to depend on concrete adapters.

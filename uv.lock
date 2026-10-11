@@ -567,7 +567,7 @@ wheels = [
 
 [[package]]
 name = "engine-adapter-agent-runner-acp"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "packages/adapters/agent_runner/acp" }
 dependencies = [
     { name = "engine-runtime" },
@@ -582,7 +582,7 @@ requires-dist = [
 
 [[package]]
 name = "engine-adapter-communications-buzz"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "packages/adapters/communications/buzz" }
 dependencies = [
     { name = "engine-runtime" },
@@ -593,7 +593,7 @@ requires-dist = [{ name = "engine-runtime", editable = "packages/runtime" }]
 
 [[package]]
 name = "engine-adapter-communications-slack"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "packages/adapters/communications/slack" }
 dependencies = [
     { name = "engine-runtime" },
@@ -610,7 +610,7 @@ requires-dist = [
 
 [[package]]
 name = "engine-adapter-sandbox-process"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "packages/adapters/sandbox/process" }
 dependencies = [
     { name = "engine-ports" },
@@ -621,7 +621,7 @@ requires-dist = [{ name = "engine-ports", editable = "packages/ports" }]
 
 [[package]]
 name = "engine-adapter-source-control-github"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "packages/adapters/source_control/github" }
 dependencies = [
     { name = "engine-runtime" },
@@ -636,7 +636,7 @@ requires-dist = [
 
 [[package]]
 name = "engine-adapter-source-control-gitlab"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "packages/adapters/source_control/gitlab" }
 dependencies = [
     { name = "engine-runtime" },
@@ -651,7 +651,7 @@ requires-dist = [
 
 [[package]]
 name = "engine-adapter-state-store-memory"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "packages/adapters/state_store/memory" }
 dependencies = [
     { name = "engine-ports" },
@@ -662,7 +662,7 @@ requires-dist = [{ name = "engine-ports", editable = "packages/ports" }]
 
 [[package]]
 name = "engine-adapter-state-store-postgres"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "packages/adapters/state_store/postgres" }
 dependencies = [
     { name = "engine-migrations" },
@@ -677,7 +677,7 @@ requires-dist = [
 
 [[package]]
 name = "engine-adapter-state-store-sqlite"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "packages/adapters/state_store/sqlite" }
 dependencies = [
     { name = "engine-migrations" },
@@ -692,7 +692,7 @@ requires-dist = [
 
 [[package]]
 name = "engine-adapter-workflow-runtime-temporal"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "packages/adapters/workflow_runtime/temporal" }
 dependencies = [
     { name = "engine-runtime" },
@@ -703,7 +703,7 @@ requires-dist = [{ name = "engine-runtime", editable = "packages/runtime" }]
 
 [[package]]
 name = "engine-adapter-workspace-provider-git-worktree"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "packages/adapters/workspace_provider/git_worktree" }
 dependencies = [
     { name = "engine-runtime" },
@@ -714,7 +714,7 @@ requires-dist = [{ name = "engine-runtime", editable = "packages/runtime" }]
 
 [[package]]
 name = "engine-cli"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "apps/cli" }
 dependencies = [
     { name = "engine-graph-cli" },
@@ -731,7 +731,7 @@ requires-dist = [
 
 [[package]]
 name = "engine-control-server"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "apps/control_server" }
 dependencies = [
     { name = "engine-adapter-agent-runner-acp" },
@@ -760,12 +760,12 @@ requires-dist = [
 
 [[package]]
 name = "engine-domain"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "packages/domain" }
 
 [[package]]
 name = "engine-github-concierge"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "packages/github-concierge" }
 dependencies = [
     { name = "engine-domain" },
@@ -784,7 +784,7 @@ requires-dist = [
 
 [[package]]
 name = "engine-graph-cli"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "cli/client" }
 dependencies = [
     { name = "platformdirs" },
@@ -799,7 +799,7 @@ requires-dist = [
 
 [[package]]
 name = "engine-graph-runtime"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "packages/graph_runtime" }
 dependencies = [
     { name = "engine-domain" },
@@ -816,7 +816,7 @@ requires-dist = [
 
 [[package]]
 name = "engine-graph-runtime-langgraph"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "packages/graph_runtime_langgraph" }
 dependencies = [
     { name = "engine-domain" },
@@ -845,7 +845,7 @@ requires-dist = [
 
 [[package]]
 name = "engine-graph-service"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "cli/service" }
 dependencies = [
     { name = "engine-domain" },
@@ -876,7 +876,7 @@ requires-dist = [
 
 [[package]]
 name = "engine-mcp-server"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "apps/mcp_server" }
 dependencies = [
     { name = "httpx" },
@@ -899,7 +899,7 @@ requires-dist = [
 
 [[package]]
 name = "engine-migrations"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
@@ -936,7 +936,7 @@ dev = [
 
 [[package]]
 name = "engine-orchestrator"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "packages/orchestrator" }
 dependencies = [
     { name = "engine-runtime" },
@@ -953,7 +953,7 @@ requires-dist = [
 
 [[package]]
 name = "engine-ports"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "packages/ports" }
 dependencies = [
     { name = "engine-domain" },
@@ -964,7 +964,7 @@ requires-dist = [{ name = "engine-domain", editable = "packages/domain" }]
 
 [[package]]
 name = "engine-runtime"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "packages/runtime" }
 dependencies = [
     { name = "engine-domain" },
@@ -981,7 +981,7 @@ requires-dist = [
 
 [[package]]
 name = "engine-scoper"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "packages/scoper" }
 dependencies = [
     { name = "engine-domain" },
@@ -996,12 +996,12 @@ requires-dist = [
 
 [[package]]
 name = "engine-single-tool-mcp"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "packages/single-tool-mcp" }
 
 [[package]]
 name = "engine-slack-concierge"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "packages/slack-concierge" }
 dependencies = [
     { name = "engine-domain" },
@@ -1022,7 +1022,7 @@ requires-dist = [
 
 [[package]]
 name = "engine-web"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "apps/web" }
 dependencies = [
     { name = "engine-adapter-agent-runner-acp" },
@@ -1077,7 +1077,7 @@ requires-dist = [
 
 [[package]]
 name = "engine-worker"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "apps/worker" }
 dependencies = [
     { name = "engine-adapter-agent-runner-acp" },
@@ -1445,7 +1445,7 @@ wheels = [
 
 [[package]]
 name = "langgraph-acp"
-version = "1.6.0"
+version = "1.7.0"
 source = { editable = "langgraph-acp" }
 
 [package.metadata]

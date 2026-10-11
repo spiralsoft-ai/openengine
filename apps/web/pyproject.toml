@@ -1,6 +1,6 @@
 [project]
 name = "engine-web"
-version = "1.6.0"
+version = "1.7.0"
 description = "Web control interface: an assistant-ui client for chatting with engine agents."
 requires-python = ">=3.11"
 # Composition root: the only layer allowed to depend on concrete adapters.

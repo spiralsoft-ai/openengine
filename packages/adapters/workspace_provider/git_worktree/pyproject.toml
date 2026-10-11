@@ -1,6 +1,6 @@
 [project]
 name = "engine-adapter-workspace-provider-git-worktree"
-version = "1.6.0"
+version = "1.7.0"
 description = "Workspace Provider capability backed by local git worktrees."
 requires-python = ">=3.11"
 # Depends on the runtime (and through it ports + domain). Worktree management

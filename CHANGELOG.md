@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.7.0](https://github.com/OpenEngine/OpenEngine/compare/v1.6.0...v1.7.0) (2026-10-11)
+
+
+### Features
+
+* **graph-service:** show a loop's latest run output ([#785](https://github.com/OpenEngine/OpenEngine/issues/785)) ([a7a3895](https://github.com/OpenEngine/OpenEngine/commit/a7a38955bde21340222d6f4fad4953b02c47d203))
+
+
+### Documentation
+
+* **site:** publish the graphs and loops post on the blog ([#794](https://github.com/OpenEngine/OpenEngine/issues/794)) ([8d71fb2](https://github.com/OpenEngine/OpenEngine/commit/8d71fb212a57f8308c1a566d2ed15791455fa0b4))
+
 ## [1.6.0](https://github.com/OpenEngine/OpenEngine/compare/v1.5.0...v1.6.0) (2026-10-09)
 
 

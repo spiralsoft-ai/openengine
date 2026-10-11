@@ -1,6 +1,6 @@
 [project]
 name = "engine-graph-runtime"
-version = "1.6.0"
+version = "1.7.0"
 description = "An API control surface over a workflow graph: runs, state, topology, events, steering, and resumption."
 requires-python = ">=3.11"
 # LangGraph itself is not named here. This distribution is the control surface

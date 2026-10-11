@@ -1,6 +1,6 @@
 [project]
 name = "engine-adapter-sandbox-process"
-version = "1.6.0"
+version = "1.7.0"
 description = "Sandbox capability using host processes."
 requires-python = ">=3.11"
 dependencies = ["engine-ports"]

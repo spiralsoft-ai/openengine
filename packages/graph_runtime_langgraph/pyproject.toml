@@ -1,6 +1,6 @@
 [project]
 name = "engine-graph-runtime-langgraph"
-version = "1.6.0"
+version = "1.7.0"
 description = "The GraphRuntime contract, implemented against LangGraph and langgraph-acp."
 requires-python = ">=3.11"
 dependencies = [

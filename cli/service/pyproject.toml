@@ -1,6 +1,6 @@
 [project]
 name = "engine-graph-service"
-version = "1.6.0"
+version = "1.7.0"
 description = "Registered graphs, runs, loops and node steering, served by the engine daemon over langgraph-acp."
 requires-python = ">=3.11"
 dependencies = [
