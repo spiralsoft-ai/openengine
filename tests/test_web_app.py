@@ -17,6 +17,7 @@ import pytest
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
+from engine.runtime.repositories import RepositoryRegistry
 from engine.adapters.agent_runner.acp import ACPAgentRunner
 from engine.adapters.communications.slack import SlackCommunications
 from engine.adapters.state_store.memory import InMemoryStateStore
@@ -2950,11 +2951,10 @@ def test_a_disconnected_repository_runs_every_workorder_disconnected(tmp_path):
 
     graph = ModeGraph(GraphId("modes"), "Modes", (ScriptedNode(NodeId("work"), (Say("Done"),)),))
     offline, online = tmp_path / "offline", tmp_path / "online"
-    app, runtime = _graph_app(
-        InMemoryStateStore(), graph,
-        repos={"acme/offline": str(offline), "acme/online": str(online)},
-        repo_modes={"acme/offline": "disconnected"},
-    )
+    registry = RepositoryRegistry(projects={})
+    app, runtime = _graph_app(InMemoryStateStore(), graph, repos=registry)
+    registry.add("acme/offline", str(offline), mode="disconnected")
+    registry.add("acme/online", str(online))
 
     async def scenario():
         async with app.router.lifespan_context(app):
@@ -2985,11 +2985,10 @@ def test_a_trusted_repository_auto_approves_its_workorders_only(tmp_path):
         GraphId("trust"), "Trust", (ScriptedNode(NodeId("work"), (Say("Done"),)),),
     )
     trusted, other = tmp_path / "trusted", tmp_path / "other"
-    app, runtime = _graph_app(
-        InMemoryStateStore(), graph,
-        repos={"acme/trusted": str(trusted), "acme/other": str(other)},
-        trusted_repos=frozenset({"acme/trusted"}),
-    )
+    registry = RepositoryRegistry(projects={})
+    app, runtime = _graph_app(InMemoryStateStore(), graph, repos=registry)
+    registry.add("acme/trusted", str(trusted), trusted=True)
+    registry.add("acme/other", str(other))
 
     async def scenario():
         async with app.router.lifespan_context(app):
@@ -3613,7 +3612,7 @@ def test_production_port_default_preserves_explicit_settings():
     assert Settings(port=8123).port == 8123
 
 
-def _login_gate(repository: str, source_control: object, login_repositories=(), check="authorize"):
+def _login_gate(repository: str, source_control: object, login_repositories=(), check="authorize", **options):
     """The `check` the app hands its GitHub login, over `source_control`."""
     unused = object()
     session = AgentSession(
@@ -3633,6 +3632,7 @@ def _login_gate(repository: str, source_control: object, login_repositories=(), 
         ),
         github_repository=repository,
         login_repositories=login_repositories,
+        **options,
     )
     callback = next(
         route.endpoint for route in app.app.routes
@@ -3759,20 +3759,25 @@ def test_retired_project_routes_and_conversation_ownership_are_absent() -> None:
     asyncio.run(scenario())
 
 
-def _scoped_app(tmp_path, runtime=None):
+def _scoped_app(tmp_path, runtime=None, *, live=False):
     """Two checkouts behind GitHub login, and a run in each place a run can be."""
     graph = _review_graph()
     store = InMemoryStateStore()
     repos = {"api": str(tmp_path / "api"), "web": str(tmp_path / "web")}
+    registry = RepositoryRegistry(projects={})
     app = _graph_app_over(
         store, runtime or ScriptedGraphRuntime(graph), graph,
         github_login_config=GitHubLoginConfig(
             "client", "secret", "https://engine.test/api/auth/github/callback"
         ),
-        repos=repos,
+        repos=registry if live else repos,
         login_repositories=("acme/api", "acme/web"),
         repository_projects={"api": "acme/api", "web": "acme/web"},
     )
+    if live:
+        for name, path in repos.items():
+            with patch.object(RepositoryRegistry, "_project", return_value=f"acme/{name}"):
+                registry.add(name, path)
     for run_id, repository, phase in (
         ("run-api", "api", RunPhase.SUCCEEDED),
         ("run-api-path", str((tmp_path / "api").resolve()), RunPhase.SUCCEEDED),
@@ -3805,10 +3810,11 @@ def _as_user(writable):
     return stack
 
 
-def test_runs_are_scoped_to_the_repositories_a_user_can_write_to(tmp_path) -> None:
+@pytest.mark.parametrize("live", [False, True])
+def test_runs_are_scoped_to_the_repositories_a_user_can_write_to(tmp_path, live) -> None:
     """Someone who can push only to `api` sees `api`'s WorkOrders, and every
     other run answers as if it did not exist."""
-    app, store, repos = _scoped_app(tmp_path)
+    app, store, repos = _scoped_app(tmp_path, live=live)
 
     async def scenario():
         transport = httpx.ASGITransport(app=app)
@@ -4132,3 +4138,14 @@ def test_onboarded_repository_can_be_selected_for_a_workorder(tmp_path, monkeypa
                 assert run.repository == str(checkout)
 
     asyncio.run(scenario())
+
+
+def test_added_repository_writers_can_sign_in(monkeypatch, tmp_path):
+    registry = RepositoryRegistry(projects={})
+    source_control = MagicMock(can_write_repository=AsyncMock(return_value=True))
+    authorize = _login_gate("", source_control, repos=registry)
+    assert asyncio.run(authorize(1, "writer")) == {}
+    monkeypatch.setattr(RepositoryRegistry, "_project", lambda self, path: "acme/new")
+    registry.add("new", str(tmp_path))
+    assert asyncio.run(authorize(1, "writer")) == {"acme/new": True}
+    assert registry.snapshot.run_projects[str(tmp_path)] == "acme/new"

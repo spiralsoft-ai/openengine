@@ -852,3 +852,24 @@ def test_the_daemon_serves_the_graph_api_and_lists_its_runs_as_work_orders(tmp_p
             store.close()
 
     asyncio.run(scenario())
+
+
+def test_running_graph_service_resolves_added_repository(tmp_path: Path, monkeypatch) -> None:
+    from engine.runtime.repositories import RepositoryRegistry
+
+    registry = RepositoryRegistry(projects={})
+    monkeypatch.setattr(RepositoryRegistry, "_project", lambda self, path: "acme/new")
+
+    async def scenario() -> None:
+        async with graph_service(tmp_path, repositories=registry) as service:
+            await service.add_graph("default", source=single("solo", "${instruction}"))
+            registry.add("acme/new", str(tmp_path))
+            assert service.resolve_repository("ACME/NEW.git") == str(tmp_path)
+            run, _ = await service.submit_run(
+                project="default", graph="solo", instruction="live", repository="acme/new",
+            )
+            snapshot = await service.runtime.snapshot(RunId(run["runId"]))
+            assert snapshot.values["repository"] == str(tmp_path)
+            assert (await settled(service, run["runId"]))["status"] == "completed"
+
+    asyncio.run(scenario())

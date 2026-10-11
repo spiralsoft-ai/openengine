@@ -13,7 +13,6 @@ import asyncio
 import ipaddress
 import logging
 import os
-import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -48,7 +47,7 @@ from engine.runtime import (
     load_workflow_catalog,
     WorkflowLoadError,
 )
-from engine.runtime.change_requests import remote_project
+from engine.runtime.repositories import RepositoryRegistry
 
 #: Vite's production output, served by the same process as the API.
 STATIC_DIRECTORY = Path(__file__).resolve().parent / "static"
@@ -180,7 +179,7 @@ def _webhook_secret_reader(webhook: GitHubWebhookConfig | None) -> Callable[[], 
     return webhook.current_secret
 
 
-def _github_login_config(loaded: LoadedEngineConfig) -> GitHubLoginConfig | None:
+def _github_login_config(loaded: LoadedEngineConfig, registry: RepositoryRegistry | None = None) -> GitHubLoginConfig | None:
     secret_file = (loaded.path.parent if loaded.path else Path.cwd()) / ".env"
     values = dotenv_values(secret_file, interpolate=False)
     client_id = os.environ.get(
@@ -201,7 +200,8 @@ def _github_login_config(loaded: LoadedEngineConfig) -> GitHubLoginConfig | None
         raise EngineConfigError(str(error)) from error
     if not (
         loaded.config.github.webhook_repositories
-        or _login_repositories(loaded, _repository_projects(loaded))
+        or (registry.snapshot.login_repositories if registry is not None
+            else _login_repositories(loaded, _repository_projects(loaded)))
         or loaded.config.access.operators
     ):
         # Sessions go only to operators and accounts that can write to one of
@@ -222,24 +222,9 @@ def _repository_projects(loaded: LoadedEngineConfig) -> dict[str, str]:
     left out: its permissions are not something GitHub can answer. The server's
     own directory is `.`, what a run gets when no `[repos]` entry is named.
     """
-    hosts = set(loaded.config.github.host_aliases)
-    projects: dict[str, str] = {}
-    checkouts = {".": ".", **loaded.config.repos}
-    for name, path in checkouts.items():
-        try:
-            remote = subprocess.run(
-                ["git", "-C", str(Path(path).expanduser()), "remote", "get-url", "origin"],
-                capture_output=True, text=True, timeout=10, check=True,
-            ).stdout
-        except (OSError, subprocess.SubprocessError):
-            continue
-        project = remote_project(remote)
-        if project is None:
-            continue
-        host, _, rest = project.partition("/")
-        if "/" not in rest or host in hosts:
-            projects[name] = project
-    return projects
+    return dict(RepositoryRegistry(
+        loaded.config.repos, host_aliases=loaded.config.github.host_aliases
+    ).snapshot.projects)
 
 
 def _login_repositories(loaded: LoadedEngineConfig, projects: Mapping[str, str]) -> tuple[str, ...]:
@@ -335,7 +320,11 @@ def compose_app(
 ) -> Starlette:
     """Wire the capability graph and hand it to the HTTP surface."""
     settings = _settings(loaded)
-    github_login_config = _github_login_config(loaded)
+    registry = RepositoryRegistry(
+        loaded.config.repos, loaded.config.repo_modes, loaded.config.trusted_repos,
+        host_aliases=loaded.config.github.host_aliases,
+    )
+    github_login_config = _github_login_config(loaded, registry)
     _require_login_off_loopback(settings, github_login_config)
     # One cached store for Settings and agent actions alike, so the token
     # `engine connect github` saved is used without reading the keychain again.
@@ -357,7 +346,6 @@ def compose_app(
         workflow_catalog.graphs if workflow_catalog is not None else (),
         source_control=capabilities.source_control,
     )
-    projects = _repository_projects(loaded) if github_login_config else {}
     return create_app(
         session,
         runners,
@@ -378,16 +366,12 @@ def compose_app(
         communications_channel=loaded.config.communications.channel,
         public_url=loaded.config.public_url,
         work_orders=loaded.config.work_orders,
-        repos=loaded.config.repos,
-        repo_modes=loaded.config.repo_modes,
-        trusted_repos=loaded.config.trusted_repos,
-        login_repositories=_login_repositories(loaded, projects) if github_login_config else (),
-        repository_projects=projects if github_login_config else {},
+        repos=registry,
         login_operators=loaded.config.access.operators,
         graph_service=build_graph_service(
             settings,
             default_repository=loaded.config.work_orders.repository,
-            repositories=loaded.config.repos,
+            repositories=registry,
         ),
     )
 
