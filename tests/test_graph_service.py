@@ -648,9 +648,22 @@ def test_a_session_is_a_run_whose_implementation_node_is_the_callers_cli(tmp_pat
             with pytest.raises(NotFound):
                 service.session_json("s-missing")
             with pytest.raises(ServiceError, match="agent must be"):
-                await service.start_session(agent="codex", repository="example/repo")
+                await service.start_session(agent="gemini", repository="example/repo")
 
     asyncio.run(scenario())
+
+
+def test_each_session_agent_is_told_engines_shell_rules_in_its_own_terms() -> None:
+    from engine.graph_service.session import agent_settings
+    from engine.runtime.config import ApprovalConfig, BashApprovalConfig
+
+    policy = ApprovalConfig(bash=BashApprovalConfig(deny=("git push **", "gh pr create", "rm *.txt")))
+    assert agent_settings("claude", policy) == {"permissions": {"deny": ["Bash(git push:*)", "Bash(gh pr create)"]}}
+    assert agent_settings("opencode", policy) == {
+        "permission": {"bash": {"git push": "deny", "git push *": "deny", "gh pr create": "deny"}},
+    }
+    assert agent_settings("codex", policy) == {}
+    assert agent_settings("opencode", ApprovalConfig(bash=BashApprovalConfig(deny=()))) == {}
 
 
 # --- agents -------------------------------------------------------------------

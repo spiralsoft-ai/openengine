@@ -88,12 +88,12 @@ The binary is `engine`. Run it with no arguments to list its commands:
 - `engine agent add|get|remove|signin` and `engine agents` manage the agents
   graphs name: the built-in `claude`, `codex` and `opencode`, and any you add,
   such as `engine agent add opencode --name qwen --model qwen3-coder --url http://gpu.local:8000/v1`.
-- `engine agent claude` starts a run whose implementation node is Claude Code
-  in this terminal: the daemon checks the repository out into a fresh
-  workspace and gives claude the same `git_subcommand` and `open_pull_request`
-  tools an implementation node gets (`[sessions] tools` in `engine.toml`
-  changes which). The run ends when claude exits. Arguments after `--` go to
-  `claude`.
+- `engine agent claude`, `engine agent codex` and `engine agent opencode`
+  start a run whose implementation node is that CLI in this terminal: the
+  daemon checks the repository out into a fresh workspace and gives the agent
+  the same `git_subcommand` and `open_pull_request` tools an implementation
+  node gets (`[sessions] tools` in `engine.toml` changes which). The run ends
+  when the CLI exits. Arguments after `--` go to the CLI.
 - `engine graph`, `engine run`, `engine loop`, `engine node` and their list
   forms (`graphs`, `loops`, `nodes`) register, execute, schedule and steer
   graphs; `engine backend` chooses which daemon they talk to. See

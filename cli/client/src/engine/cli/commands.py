@@ -55,7 +55,7 @@ def add_parsers(commands: argparse._SubParsersAction) -> argparse._SubParsersAct
     """Add these commands to the `engine` parser.
 
     Answers `engine agent`'s actions, so the terminal app can add the ones that
-    run here rather than on a backend, such as `engine agent claude`.
+    run here rather than on a backend, such as `engine agent claude`, `codex` and `opencode`.
     """
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--backend", metavar="NAME", help="the backend to use (default: the selected one)")

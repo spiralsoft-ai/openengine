@@ -1,6 +1,6 @@
 """Interactive sessions: a person's own agent CLI as a graph run's implementation node.
 
-`engine agent claude` starts a run of one built-in graph: the workspace node
+`engine agent claude|codex|opencode` starts a run of one built-in graph: the workspace node
 every graph has, then a node that does what an implementation node does --
 binds the run's repository tools to the checkout -- and hands them to a CLI
 the person drives in their own terminal, instead of opening an ACP session.
@@ -49,7 +49,7 @@ BASE_INPUT = "base"
 CHECKOUT_NODE = "workspace"
 SESSION_NODE = "implement"
 #: The harnesses a session can be driven with.
-SESSION_AGENTS = ("claude",)
+SESSION_AGENTS = ("claude", "codex", "opencode")
 
 
 @dataclass
@@ -118,7 +118,7 @@ class SessionNode:
                     },
                     "mcp": dict(bound.config),
                     "instructions": session_instructions(state),
-                    "settings": claude_settings(self.policy),
+                    "settings": agent_settings(session.agent, self.policy),
                 })
                 summary = await self._summary(session, bound.result)
         except BaseException as error:
@@ -184,23 +184,44 @@ def session_instructions(state: Mapping[str, object]) -> str:
     )
 
 
-def claude_settings(policy: ApprovalConfig) -> dict[str, Any]:
-    """Claude Code settings carrying the shell rules Engine enforces on its own agents.
+def agent_settings(agent: str, policy: ApprovalConfig) -> dict[str, Any]:
+    """The agent's own settings carrying the shell rules Engine enforces on its own agents.
 
-    Engine's patterns are globs over a whole command; Claude's are command
-    prefixes. A pattern whose only wildcard is a trailing ` **` says the same
-    thing in both, and is the shape the deny list is written in; any other
-    pattern cannot be said to Claude and is left out rather than approximated.
+    Engine's patterns are globs over a whole command. Only the shape the deny
+    list is written in -- a literal command, or one whose only wildcard is a
+    trailing ` **` -- can be said the same way to every agent; any other
+    pattern is left out rather than approximated. Codex has no command rules
+    its configuration can carry, so it is given none; the repository tools
+    still refuse what Engine refuses.
     """
-    deny = [rule for rule in (_claude_rule(pattern) for pattern in policy.bash.deny) if rule]
-    return {"permissions": {"deny": deny}} if deny else {}
+    rules = [rule for rule in (_command_rule(pattern) for pattern in policy.bash.deny) if rule]
+    if not rules:
+        return {}
+    if agent == "claude":
+        return {"permissions": {"deny": [f"Bash({head}:*)" if prefix else f"Bash({head})" for head, prefix in rules]}}
+    if agent == "opencode":
+        # OpenCode takes the last bash rule that matches, so these, merged
+        # after the operator's own, win; `head *` alone would miss `head`.
+        bash: dict[str, str] = {}
+        for head, prefix in rules:
+            bash[head] = "deny"
+            if prefix:
+                bash[f"{head} *"] = "deny"
+        return {"permission": {"bash": bash}}
+    return {}
 
 
-def _claude_rule(pattern: str) -> str:
+def claude_settings(policy: ApprovalConfig) -> dict[str, Any]:
+    """Claude Code settings carrying Engine's shell rules; see `agent_settings`."""
+    return agent_settings("claude", policy)
+
+
+def _command_rule(pattern: str) -> tuple[str, bool] | None:
+    """`(command, whether anything may follow it)`, or None for a pattern no agent can be told."""
     head = pattern.removesuffix(" **")
     if any(character in head for character in "*?["):
-        return ""
-    return f"Bash({head}:*)" if head != pattern else f"Bash({head})"
+        return None
+    return head, head != pattern
 
 
 __all__ = [
@@ -209,6 +230,7 @@ __all__ = [
     "Session",
     "SessionNode",
     "Sessions",
+    "agent_settings",
     "claude_settings",
     "session_workflow",
 ]

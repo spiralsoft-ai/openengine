@@ -55,13 +55,13 @@ class WorkflowsConfig:
     directory: str = ""
 
 
-#: What `engine agent claude` serves when `[sessions] tools` says nothing: an implementation node's tools.
+#: What `engine agent claude|codex|opencode` serves when `[sessions] tools` says nothing: an implementation node's tools.
 DEFAULT_SESSION_TOOLS: tuple[str, ...] = ("git_subcommand", "open_pull_request")
 
 
 @dataclass(frozen=True, slots=True)
 class SessionsConfig:
-    """`[sessions]`: what an interactive `engine agent claude` session is given."""
+    """`[sessions]`: what an interactive `engine agent claude|codex|opencode` session is given."""
 
     tools: tuple[str, ...] = DEFAULT_SESSION_TOOLS
     """The repository tools its agent reaches through Engine, as an implementation node's `tools`."""

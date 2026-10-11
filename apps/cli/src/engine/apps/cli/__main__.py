@@ -43,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
         return connect.disconnect(arguments)
     if arguments.command == "daemon":
         return daemon.main(arguments)
-    if arguments.command == "agent" and arguments.action == "claude":
+    if arguments.command == "agent" and arguments.action in session.AGENTS:
         return session.main(arguments)
     if arguments.command in graph_commands.COMMANDS:
         return graph_commands.main(arguments)
