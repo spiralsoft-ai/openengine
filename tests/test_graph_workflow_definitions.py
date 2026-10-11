@@ -19,7 +19,6 @@ import importlib.util
 import tomllib
 from pathlib import Path
 
-import httpx
 import pytest
 
 from engine.adapters.workspace_provider.git_worktree import (
@@ -744,7 +743,11 @@ def test_the_catalog_answers_for_the_workflow_by_id() -> None:
 
 
 def test_the_interface_offers_the_graphs_by_their_own_names(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, configured_checkouts: None
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    configured_checkouts: None,
+    *,
+    async_client,
 ) -> None:
     """The dropdown itself, through the endpoint the client reads it from.
 
@@ -772,9 +775,7 @@ def test_the_interface_offers_the_graphs_by_their_own_names(
     app = build_app()
 
     async def ask() -> dict:
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with async_client(app, base_url="http://test") as client:
             async with app.router.lifespan_context(app):
                 answered = await client.get("/api/config")
             assert answered.status_code == 200

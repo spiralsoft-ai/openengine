@@ -273,10 +273,10 @@ def test_agents_are_added_listed_and_removed_on_the_backend(monkeypatch, capsys)
     assert "built in" in out and "http://gpu:8000/v1" in out and "removed qwen" in out
 
 
-def test_graph_run_sends_the_repository_it_is_run_from(tmp_path, monkeypatch) -> None:
-    import subprocess
-
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+def test_graph_run_sends_the_repository_it_is_run_from(
+    tmp_path, monkeypatch, *, git_repo
+) -> None:
+    git_repo(tmp_path)
     monkeypatch.chdir(tmp_path)
     recorded = serve(monkeypatch, RUN)
     assert main(["graph", "run", "pair", "say hello"]) == 0

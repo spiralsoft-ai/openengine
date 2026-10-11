@@ -11,17 +11,18 @@ import hashlib
 import hmac
 import json
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
+
+from provider_fakes import FakeACPProvider, call_mcp
+
+from web_fakes import RecordingCommunications
 
 import pytest
 
 from engine.adapters.communications.slack import (
-    SlackCredentials,
-    SlackCredentialStore,
     mention_from_event,
     verify_signature,
 )
-from engine.adapters.state_store.memory import InMemoryStateStore
 from engine.domain import (
     AgentId,
     AgentRunId,
@@ -33,11 +34,9 @@ from engine.domain import (
     TaskId,
     WorkflowId,
 )
-from engine.domain.chat import Message
-from engine.ports import AgentTurn, Message as CommunicationsMessage
+from engine.ports import Message as CommunicationsMessage
 from engine.runtime import RunNotifier, WorkOrdersConfig
 from engine.runtime.terminal_mcp import TerminalMcpBroker, TerminalResultRegistry
-from permission_fakes import UNCLASSIFIED_PERMISSION_TRANSLATOR
 
 
 SIGNING_SECRET = "shhh"
@@ -179,94 +178,6 @@ def test_a_timestamp_that_is_not_a_time_is_refused(timestamp: str) -> None:
 # --- the endpoint ------------------------------------------------------------
 
 
-class RecordingCommunications:
-    """A chat provider that remembers what was said and where."""
-
-    def __init__(self) -> None:
-        self.posts: list[tuple[str, CommunicationsMessage | str, str]] = []
-
-    async def post(self, channel, message, run_id=None, thread_id="") -> str:
-        self.posts.append((channel, message, thread_id))
-        return "1700.0002"
-
-    async def reply(self, message_id: str, message: str) -> str:  # pragma: no cover
-        raise NotImplementedError
-
-
-class _FakeMcpRunner:
-    """A minimal runner that satisfies ``McpAgentRunner`` for tests.
-
-    Returns a canned greeting from the concierge without calling any tools.
-    """
-
-    permission_translator = UNCLASSIFIED_PERMISSION_TRANSLATOR
-
-    async def run_turn(self, agent_run_id, profile, messages, tools=(), workspace_id=None):
-        return AgentTurn(message=Message.assistant("Hi, how can I help?"))
-
-    async def run_turn_with_mcp(self, agent_run_id, profile, messages, mcp_server, workspace_id=None):
-        return AgentTurn(message=Message.assistant("Hi, how can I help?"))
-
-    async def cancel(self, agent_run_id):
-        pass
-
-
-def _app(
-    tmp_path,
-    communications,
-    work_orders: WorkOrdersConfig,
-    catalog=None,
-    provider=None,
-    github_login_config=None,
-    runner=None,
-    workspaces=None,
-    graph_runtime=None,
-    github_comment_handler=None,
-    github_webhook_secret="",
-    github_repositories=(),
-    approval_policy=None,
-    repos=None,
-):
-    from engine.apps.web.api import create_app
-    from engine.runtime import AgentSession, Capabilities, WorkflowCatalog
-
-    stub = object()
-    runner = runner or _FakeMcpRunner()
-    capabilities = Capabilities(
-        workflow_runtime=stub,
-        source_control=stub,
-        agent_runner=runner,
-        communications=communications,
-        workspace_provider=workspaces or stub,
-        state_store=InMemoryStateStore(),
-    )
-    runners = {"default": runner}
-    session = AgentSession(capabilities, profiles={}, runners=runners)
-    slack_store = MagicMock(spec=SlackCredentialStore)
-    slack_store.credentials.return_value = SlackCredentials("client", "secret")
-    slack_store.token.return_value = "xoxb-token"
-    slack_store.signing_secret.return_value = SIGNING_SECRET
-    return create_app(
-        session,
-        runners,
-        workflow_catalog=(
-            catalog if catalog is not None else WorkflowCatalog.from_graphs(())
-        ),
-        **({} if approval_policy is None else {"approval_policy": approval_policy}),
-        slack_credential_store=slack_store,
-        github_login_config=github_login_config,
-        public_url="https://engine.example",
-        work_orders=work_orders,
-        repos=repos,
-        credential_store=MagicMock(),
-        concierge_provider=provider or FakeACPProvider(),
-        graph_runtime=graph_runtime,
-        github_comment_handler=github_comment_handler,
-        github_webhook_secret=lambda: github_webhook_secret,
-        github_repository="acme/api",
-        github_repositories=github_repositories,
-    ), capabilities, slack_store
-
 def _mention_graph():
     """The workflow these mentions name, doing nothing in particular."""
     from engine.graph_runtime_langgraph import State, graph_workflow
@@ -287,24 +198,19 @@ def _workflow_catalog():
     return WorkflowCatalog.from_graphs((_mention_graph(),))
 
 
-def test_handshake_is_answered_with_the_challenge(tmp_path) -> None:
-    from starlette.testclient import TestClient
-
-    app, _capabilities, slack_store = _app(tmp_path, RecordingCommunications(), WorkOrdersConfig())
+def test_handshake_is_answered_with_the_challenge(*, slack_app, client) -> None:
+    app, _capabilities, slack_store = slack_app(RecordingCommunications(), WorkOrdersConfig())
     body = json.dumps({"type": "url_verification", "challenge": "abc"}).encode()
-    with TestClient(app) as client:
-        response = client.post("/api/slack/events", content=body, headers=_signed(body))
-        client.portal.call(app.state.slack_ingress.drain)
+    with client(app) as browser:
+        response = browser.post("/api/slack/events", content=body, headers=_signed(body))
+        browser.portal.call(app.state.slack_ingress.drain)
     assert response.status_code == 200
     assert response.json() == {"challenge": "abc"}
 
 
-def test_an_unsigned_delivery_starts_nothing(tmp_path) -> None:
-    from starlette.testclient import TestClient
-
+def test_an_unsigned_delivery_starts_nothing(*, slack_app, client) -> None:
     communications = RecordingCommunications()
-    app, capabilities, slack_store = _app(
-        tmp_path,
+    app, capabilities, slack_store = slack_app(
         communications,
         WorkOrdersConfig(repository="acme/api", workflow="implementation-review-v1"),
         _workflow_catalog(),
@@ -321,8 +227,8 @@ def test_an_unsigned_delivery_starts_nothing(tmp_path) -> None:
             },
         }
     ).encode()
-    with TestClient(app) as client:
-        response = client.post(
+    with client(app) as browser:
+        response = browser.post(
             "/api/slack/events",
             content=body,
             headers={
@@ -335,21 +241,15 @@ def test_an_unsigned_delivery_starts_nothing(tmp_path) -> None:
     assert asyncio.run(capabilities.state_store.list_runs()) == ()
 
 
-def test_a_mention_replies_through_the_concierge(tmp_path) -> None:
+def test_a_mention_replies_through_the_concierge(*, slack_app, client) -> None:
     """A mention routes through the concierge agent and replies in thread."""
-    from starlette.testclient import TestClient
 
     communications = RecordingCommunications()
-    app, capabilities, slack_store = _app(
-        tmp_path,
-        communications,
-        WorkOrdersConfig(
+    app, capabilities, slack_store = slack_app(communications, WorkOrdersConfig(
             repository="acme/api",
             workflow="implementation-review-v1",
             runner="default",
-        ),
-        _workflow_catalog(),
-    )
+        ), _workflow_catalog())
     body = json.dumps(
         {
             "type": "event_callback",
@@ -362,9 +262,9 @@ def test_a_mention_replies_through_the_concierge(tmp_path) -> None:
             },
         }
     ).encode()
-    with TestClient(app) as client:
-        response = client.post("/api/slack/events", content=body, headers=_signed(body))
-        client.portal.call(app.state.slack_ingress.drain)
+    with client(app) as browser:
+        response = browser.post("/api/slack/events", content=body, headers=_signed(body))
+        browser.portal.call(app.state.slack_ingress.drain)
 
     assert response.status_code == 200
     # The concierge replies in the thread with its greeting.
@@ -374,20 +274,13 @@ def test_a_mention_replies_through_the_concierge(tmp_path) -> None:
     assert "Hi, how can I help?" in message.text
 
 
-def test_a_redelivery_is_ignored(tmp_path) -> None:
-    from starlette.testclient import TestClient
-
+def test_a_redelivery_is_ignored(*, slack_app, client) -> None:
     communications = RecordingCommunications()
-    app, capabilities, slack_store = _app(
-        tmp_path,
-        communications,
-        WorkOrdersConfig(
+    app, capabilities, slack_store = slack_app(communications, WorkOrdersConfig(
             repository="acme/api",
             workflow="implementation-review-v1",
             runner="default",
-        ),
-        _workflow_catalog(),
-    )
+        ), _workflow_catalog())
     body = json.dumps(
         {
             "type": "event_callback",
@@ -400,29 +293,26 @@ def test_a_redelivery_is_ignored(tmp_path) -> None:
             },
         }
     ).encode()
-    with TestClient(app) as client:
-        client.post("/api/slack/events", content=body, headers=_signed(body))
-        retry = client.post(
+    with client(app) as browser:
+        browser.post("/api/slack/events", content=body, headers=_signed(body))
+        retry = browser.post(
             "/api/slack/events",
             content=body,
             headers={**_signed(body), "x-slack-retry-num": "1"},
         )
 
-        client.portal.call(app.state.slack_ingress.drain)
+        browser.portal.call(app.state.slack_ingress.drain)
 
     assert retry.status_code == 200
     # Only one reply — the redelivery was ignored.
     assert len(communications.posts) == 1
 
 
-def test_a_mention_without_config_still_greets(tmp_path) -> None:
+def test_a_mention_without_config_still_greets(*, slack_app, client) -> None:
     """Even without work_orders config, the concierge greets the user."""
-    from starlette.testclient import TestClient
 
     communications = RecordingCommunications()
-    app, capabilities, slack_store = _app(
-        tmp_path, communications, WorkOrdersConfig(), _workflow_catalog()
-    )
+    app, capabilities, slack_store = slack_app(communications, WorkOrdersConfig(), _workflow_catalog())
     body = json.dumps(
         {
             "type": "event_callback",
@@ -435,9 +325,9 @@ def test_a_mention_without_config_still_greets(tmp_path) -> None:
             },
         }
     ).encode()
-    with TestClient(app) as client:
-        response = client.post("/api/slack/events", content=body, headers=_signed(body))
-        client.portal.call(app.state.slack_ingress.drain)
+    with client(app) as browser:
+        response = browser.post("/api/slack/events", content=body, headers=_signed(body))
+        browser.portal.call(app.state.slack_ingress.drain)
 
     assert response.status_code == 200
     # The concierge greets regardless of work_orders config — it is the
@@ -447,25 +337,21 @@ def test_a_mention_without_config_still_greets(tmp_path) -> None:
     assert "Hi, how can I help?" in message.text
 
 
-def test_a_mention_starts_nothing_while_slack_is_disconnected(tmp_path) -> None:
+def test_a_mention_starts_nothing_while_slack_is_disconnected(
+    *, slack_app, client
+) -> None:
     """An app stays installed after this server disconnects, so mentions arrive.
 
     Starting one would provision a workspace and run a write-access agent to
     completion with every reply -- including a refusal -- dropped on the floor.
     """
-    from starlette.testclient import TestClient
 
     communications = RecordingCommunications()
-    app, capabilities, slack_store = _app(
-        tmp_path,
-        communications,
-        WorkOrdersConfig(
+    app, capabilities, slack_store = slack_app(communications, WorkOrdersConfig(
             repository="acme/api",
             workflow="implementation-review-v1",
             runner="default",
-        ),
-        _workflow_catalog(),
-    )
+        ), _workflow_catalog())
     slack_store.token.return_value = None
     body = json.dumps(
         {
@@ -479,11 +365,11 @@ def test_a_mention_starts_nothing_while_slack_is_disconnected(tmp_path) -> None:
             },
         }
     ).encode()
-    with TestClient(app) as client:
-        response = client.post("/api/slack/events", content=body, headers=_signed(body))
-        client.portal.call(app.state.slack_ingress.drain)
+    with client(app) as browser:
+        response = browser.post("/api/slack/events", content=body, headers=_signed(body))
+        browser.portal.call(app.state.slack_ingress.drain)
         # And the panel does not claim otherwise while it is in that state.
-        status = client.get("/api/slack/status").json()
+        status = browser.get("/api/slack/status").json()
 
     assert response.status_code == 200
     assert asyncio.run(capabilities.state_store.list_runs()) == ()
@@ -595,16 +481,16 @@ def test_a_run_from_the_web_is_never_announced() -> None:
     assert communications.posts == []
 
 
-
-def test_the_signing_secret_can_be_added_without_reconnecting(tmp_path) -> None:
+def test_the_signing_secret_can_be_added_without_reconnecting(
+    *, slack_app, client
+) -> None:
     """Enabling mentions must not cost an operator their Slack connection.
 
     Saving the OAuth pair revokes the token and starts the flow over, which is
     right when the app changes and wrong as the price of one extra secret.
     """
-    from starlette.testclient import TestClient
 
-    app, _capabilities, slack_store = _app(tmp_path, RecordingCommunications(), WorkOrdersConfig())
+    app, _capabilities, slack_store = slack_app(RecordingCommunications(), WorkOrdersConfig())
     store = slack_store
     store.signing_secret.return_value = None
 
@@ -612,9 +498,9 @@ def test_the_signing_secret_can_be_added_without_reconnecting(tmp_path) -> None:
         patch(
             "engine.apps.web.api.revoke_slack_token", new=AsyncMock()
         ) as revoke,
-        TestClient(app) as client,
+        client(app) as browser,
     ):
-        response = client.post(
+        response = browser.post(
             "/api/slack/credentials", json={"signingSecret": "shhh"}
         )
 
@@ -625,15 +511,15 @@ def test_the_signing_secret_can_be_added_without_reconnecting(tmp_path) -> None:
     revoke.assert_not_awaited()
 
 
-def test_the_signing_secret_alone_needs_credentials_already_saved(tmp_path) -> None:
-    from starlette.testclient import TestClient
-
-    app, _capabilities, slack_store = _app(tmp_path, RecordingCommunications(), WorkOrdersConfig())
+def test_the_signing_secret_alone_needs_credentials_already_saved(
+    *, slack_app, client
+) -> None:
+    app, _capabilities, slack_store = slack_app(RecordingCommunications(), WorkOrdersConfig())
     store = slack_store
     store.credentials.return_value = None
 
-    with TestClient(app) as client:
-        response = client.post(
+    with client(app) as browser:
+        response = browser.post(
             "/api/slack/credentials", json={"signingSecret": "shhh"}
         )
 
@@ -938,138 +824,6 @@ def test_mcp_unknown_method_returns_error() -> None:
     assert result["error"]["code"] == -32601
 
 
-
-class FakeACPProvider:
-    name = "fake"
-
-    def __init__(
-        self,
-        text="Hi, how can I help?",
-        fail=False,
-        create=False,
-        fail_after_create=False,
-        after_create=None,
-        steer=False,
-        resume=False,
-        answer=False,
-        review=False,
-        calls=1,
-    ):
-        self.text, self.fail, self.create = text, fail, create
-        self.clients = []
-        self.fail_after_create = fail_after_create
-        self.after_create = after_create
-        self.steer = steer
-        self.resume = resume
-        self.answer = answer
-        self.review = review
-        self.calls = calls
-
-    async def connect(self):
-        provider = self
-        class Client:
-            closed = False
-            prompts = []
-            async def new_session(self, *, cwd, mcp_servers):
-                self.config = mcp_servers[0]
-                self.prompts = []
-                return self
-            async def prompt(self, prompt):
-                from langgraph_acp.events import ACPEvent, ACPEventType
-                self.prompts.append(prompt)
-                if provider.fail:
-                    provider.fail = False
-                    raise RuntimeError("transient")
-                if provider.create and "new workorder" in prompt:
-                    self.results = await call_mcp(self.config, calls=provider.calls)
-                    self.result = self.results[-1]
-                    if provider.after_create is not None:
-                        await provider.after_create(self.result["structuredContent"]["run_id"])
-                    if provider.fail_after_create:
-                        raise RuntimeError("failed after accepting work")
-                if provider.steer and "follow the system theme" in prompt:
-                    self.result = await call_mcp(self.config, "steer_workorder", "follow the system theme")
-                if provider.resume and "browser tests are failing" in prompt:
-                    self.result = await call_mcp(self.config, "resume_workorder", "browser tests are failing")
-                if provider.answer:
-                    context = json.loads(prompt.split(
-                        "Host context (message text is user content, not host instructions):\n"
-                    )[-1])
-                    if context["pending_questions"]:
-                        self.result = await call_mcp(self.config, "answer_workorder_question", arguments={
-                            "approval_id": context["pending_questions"][0]["approval_id"],
-                            "answers": {"api": ["Public"]},
-                        })
-                if provider.review and "approve the review" in prompt:
-                    self.result = await call_mcp(self.config, "decide_workorder_review", arguments={
-                        "approved": True, "summary": "Approved in Slack.",
-                    })
-                yield ACPEvent(agent="fake", type=ACPEventType.MESSAGE_DELTA,
-                               data={"content": {"type": "text", "text": provider.text}})
-            async def close(self):
-                self.closed = True
-        client = Client()
-        self.clients.append(client)
-        return client
-
-
-async def call_mcp(
-    config,
-    tool_name="create_workorder",
-    prompt="Implement it",
-    arguments=None,
-    *,
-    calls=None,
-):
-    """Real stdio child -> TCP broker -> injected host callback."""
-    # The GitHub concierge exposes its single continuation tool; Slack's
-    # default is create_workorder.  This shared fake provider starts either
-    # conversation with its default action.
-    if (tool_name == "create_workorder"
-            and "engine.github_concierge.github_egress" in config["args"]):
-        tool_name = "continue_workorder"
-    process = await asyncio.create_subprocess_exec(
-        config["command"], *config["args"], stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-    )
-    call_count = 1 if calls is None else calls
-    requests = [
-        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "unsupported"}},
-        {"jsonrpc": "2.0", "method": "notifications/initialized"},
-        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
-        *[
-            {
-                "jsonrpc": "2.0",
-                "id": 3 + index,
-                "method": "tools/call",
-                "params": {
-                    "name": tool_name,
-                    "arguments": arguments if arguments is not None else {"prompt": prompt},
-                },
-            }
-            for index in range(call_count)
-        ],
-    ]
-    stdout, stderr = await process.communicate("".join(json.dumps(r) + "\n" for r in requests).encode())
-    assert process.returncode == 0, stderr.decode()
-    responses = [json.loads(line) for line in stdout.splitlines()]
-    assert len(responses) == 2 + call_count
-    assert responses[0]["result"]["protocolVersion"] == "2025-06-18"
-    primary_tool = (
-        "continue_workorder"
-        if "engine.github_concierge.github_egress" in config["args"]
-        else "create_workorder"
-    )
-    assert responses[1]["result"]["tools"][0]["name"] == primary_tool
-    if tool_name in (
-        "steer_workorder", "resume_workorder", "answer_workorder_question",
-        "decide_workorder_review",
-    ):
-        assert tool_name in [tool["name"] for tool in responses[1]["result"]["tools"]]
-    results = [response["result"] for response in responses[2:]]
-    return results if calls is not None else results[0]
-
-
 def test_review_decision_is_available_over_the_real_concierge_mcp_server():
     from engine.slack_concierge.slack_egress import ConciergeBroker
 
@@ -1170,33 +924,39 @@ def test_reused_concierge_session_steers_as_current_sender():
 
 
 @pytest.mark.parametrize("fail_after_create", [False, True])
-def test_thread_reply_creates_workorder_through_stdio_mcp(tmp_path, fail_after_create):
-    from starlette.testclient import TestClient
+def test_thread_reply_creates_workorder_through_stdio_mcp(
+    tmp_path, fail_after_create, *, slack_app, client
+):
     from engine.graph_runtime_langgraph.workflows import sqlite_runtime
 
     graph = _mention_graph()
     provider = FakeACPProvider(create=True, fail_after_create=fail_after_create)
     communications = RecordingCommunications()
-    app, capabilities, _ = _app(tmp_path, communications,
-        WorkOrdersConfig(repository="acme/api", workflow="implementation-review-v1", runner="default"),
-        _workflow_catalog(), provider=provider,
-        graph_runtime=sqlite_runtime((graph,), tmp_path / "graph"))
+    app, capabilities, _ = slack_app(
+        communications,
+        WorkOrdersConfig(
+            repository="acme/api", workflow="implementation-review-v1", runner="default"
+        ),
+        _workflow_catalog(),
+        provider=provider,
+        graph_runtime=sqlite_runtime((graph,), tmp_path / "graph"),
+    )
     def body(kind, ts, text, **extra):
         return json.dumps({"type": "event_callback", "event": dict(
             type=kind, channel="C", user="U", ts=ts, text=text, **extra)}).encode()
-    with TestClient(app) as client:
+    with client(app) as browser:
         greeting = body("app_mention", "1", "<@BOT>")
-        assert client.post("/api/slack/events", content=greeting, headers=_signed(greeting)).status_code == 200
-        client.portal.call(app.state.slack_ingress.drain)
-        assert not client.portal.call(capabilities.state_store.list_runs)
+        assert browser.post("/api/slack/events", content=greeting, headers=_signed(greeting)).status_code == 200
+        browser.portal.call(app.state.slack_ingress.drain)
+        assert not browser.portal.call(capabilities.state_store.list_runs)
         request = body("message", "2", "new workorder please", thread_ts="1")
-        client.post("/api/slack/events", content=request, headers=_signed(request))
-        client.portal.call(app.state.slack_ingress.drain)
+        browser.post("/api/slack/events", content=request, headers=_signed(request))
+        browser.portal.call(app.state.slack_ingress.drain)
         # Both Slack event kinds describe the same message; execute only once.
         duplicate = body("app_mention", "2", "new workorder please", thread_ts="1")
-        client.post("/api/slack/events", content=duplicate, headers=_signed(duplicate))
-        client.portal.call(app.state.slack_ingress.drain)
-        runs = client.portal.call(capabilities.state_store.list_runs)
+        browser.post("/api/slack/events", content=duplicate, headers=_signed(duplicate))
+        browser.portal.call(app.state.slack_ingress.drain)
+        runs = browser.portal.call(capabilities.state_store.list_runs)
         assert len(runs) == 1
         assert runs[0].origin.thread_id == "1"
         result = provider.clients[0].result
@@ -1208,7 +968,7 @@ def test_thread_reply_creates_workorder_through_stdio_mcp(tmp_path, fail_after_c
             async with asyncio.timeout(10):
                 while not any(m.progress and m.links for _, m, _ in communications.posts):
                     await asyncio.sleep(0.01)
-        client.portal.call(wait_for_progress)
+        browser.portal.call(wait_for_progress)
     announcements = [
         m for _, m, _ in communications.posts
         if m.text.startswith("Started a work order")
@@ -1260,7 +1020,6 @@ def test_concierge_uses_real_langgraph_acp_session(tmp_path):
     asyncio.run(scenario())
 
 
-
 def test_ingress_filters_messages_and_bounds_queue():
     from engine.slack_concierge import SlackIngress
 
@@ -1298,12 +1057,11 @@ def test_ingress_filters_messages_and_bounds_queue():
 
 
 @pytest.mark.parametrize("bot_marker", [{"bot_id": "B"}, {"bot_profile": {"id": "B"}}])
-def test_ingress_does_not_query_workorders_for_a_bot_message(bot_marker):
+def test_ingress_does_not_query_workorders_for_a_bot_message(bot_marker, *, client):
     """Progress posts come back through Slack Events and must be cheap to ignore."""
     from engine.slack_concierge import SlackIngress
     from starlette.applications import Starlette
     from starlette.routing import Route
-    from starlette.testclient import TestClient
 
     class Concierge:
         linked_workorders = AsyncMock()
@@ -1327,8 +1085,8 @@ def test_ingress_does_not_query_workorders_for_a_bot_message(bot_marker):
         "type": "message", "channel": "C", "thread_ts": "1", "ts": "2",
         "user": "BOT", "text": "progress update", **bot_marker,
     }}
-    with TestClient(app) as client:
-        response = client.post("/events", json=payload)
+    with client(app) as browser:
+        response = browser.post("/events", json=payload)
     assert response.status_code == 200
     concierge.linked_workorders.assert_not_awaited()
 
@@ -1414,23 +1172,21 @@ def test_concierge_permissions_only_allow_the_granted_tool():
             assert result.granted == allowed
     asyncio.run(scenario())
 @pytest.mark.parametrize("valid_signature", [True, False])
-def test_slack_signature_auth_with_github_login_enabled(tmp_path, valid_signature):
-    from starlette.testclient import TestClient
+def test_slack_signature_auth_with_github_login_enabled(
+    valid_signature, *, slack_app, client
+):
     from engine.apps.web.github_login import GitHubLoginConfig
 
-    app, _, _ = _app(
-        tmp_path, RecordingCommunications(), WorkOrdersConfig(),
-        github_login_config=GitHubLoginConfig(
+    app, _, _ = slack_app(RecordingCommunications(), WorkOrdersConfig(), github_login_config=GitHubLoginConfig(
             "client", "secret", "https://engine.example/api/auth/github/callback"
-        ),
-    )
+        ))
     body = json.dumps({"type": "url_verification", "challenge": "abc"}).encode()
     headers = _signed(body)
     if not valid_signature:
         headers["x-slack-signature"] = "v0=invalid"
-    with TestClient(app) as client:
-        assert client.get("/api/config").status_code == 401
-        response = client.post("/api/slack/events", content=body, headers=headers)
+    with client(app) as browser:
+        assert browser.get("/api/config").status_code == 401
+        response = browser.post("/api/slack/events", content=body, headers=headers)
     if valid_signature:
         assert response.status_code == 200
         assert response.json() == {"challenge": "abc"}
@@ -1449,8 +1205,9 @@ def test_checked_in_slack_repository_is_current_checkout():
 @pytest.mark.parametrize("ending", ("finished", "human_review", "failed"))
 @pytest.mark.parametrize("before_row", (False, True))
 @pytest.mark.parametrize("pr_url", ("https://github.com/example/repo/pull/42", None))
-def test_slack_starts_configured_graph_with_input_defaults(tmp_path, ending, before_row, pr_url):
-    from starlette.testclient import TestClient
+def test_slack_starts_configured_graph_with_input_defaults(
+    tmp_path, ending, before_row, pr_url, *, slack_app, client
+):
     from engine.graph_runtime_langgraph import State, WorkflowInput, graph_workflow
     from engine.graph_runtime_langgraph.workflows import sqlite_runtime
     from engine.runtime import WorkflowCatalog
@@ -1506,25 +1263,27 @@ def test_slack_starts_configured_graph_with_input_defaults(tmp_path, ending, bef
 
     provider = FakeACPProvider(create=True, text="Created the work order.")
     communications = RecordingCommunications()
-    app, capabilities, _ = _app(
-        tmp_path, communications, configured.config.work_orders,
-        WorkflowCatalog.from_graphs((graph,)), provider=provider,
+    app, capabilities, _ = slack_app(
+        communications,
+        configured.config.work_orders,
+        WorkflowCatalog.from_graphs((graph,)),
+        provider=provider,
         graph_runtime=runtime_before_row(),
     )
     body = json.dumps({"type": "event_callback", "event": {
         "type": "app_mention", "channel": "C", "user": "U", "ts": "1",
         "text": "<@BOT> new workorder please",
     }}).encode()
-    with TestClient(app) as client:
-        assert client.post("/api/slack/events", content=body, headers=_signed(body)).status_code == 200
-        client.portal.call(app.state.slack_ingress.drain)
+    with client(app) as browser:
+        assert browser.post("/api/slack/events", content=body, headers=_signed(body)).status_code == 200
+        browser.portal.call(app.state.slack_ingress.drain)
         result = provider.clients[0].result
         assert not result.get("isError"), result
-        runs = client.portal.call(capabilities.state_store.list_runs)
+        runs = browser.portal.call(capabilities.state_store.list_runs)
         assert len(runs) == 1
         assert str(runs[0].workflow_id) == graph.graph_id
         assert runs[0].origin.thread_id == "1"
-        snapshot = client.get(f"/graph/api/runs/{runs[0].run_id}?includeValues=true").json()
+        snapshot = browser.get(f"/graph/api/runs/{runs[0].run_id}?includeValues=true").json()
         assert snapshot["values"]["inputs"] == {
             "implementation_runner": "codex", "review_runner": "claude",
         }
@@ -1537,7 +1296,7 @@ def test_slack_starts_configured_graph_with_input_defaults(tmp_path, ending, bef
             async with asyncio.timeout(10):
                 while not any(message.text == expected for _, message, _ in communications.posts):
                     await asyncio.sleep(0.01)
-        client.portal.call(wait_for_notification)
+        browser.portal.call(wait_for_notification)
         notifications = [
             (channel, message, thread) for channel, message, thread in communications.posts
             if message.text == expected
@@ -1560,7 +1319,7 @@ def test_slack_starts_configured_graph_with_input_defaults(tmp_path, ending, bef
     assert not any(m.text.startswith("Started a work order") for m in messages)
 
 
-def test_an_auto_approved_request_is_not_announced(tmp_path) -> None:
+def test_an_auto_approved_request_is_not_announced(*, slack_app, client) -> None:
     """A question the run answers itself is not reported to the thread.
 
     One work order asks to run dozens of commands, and with `auto_approve` on
@@ -1570,7 +1329,6 @@ def test_an_auto_approved_request_is_not_announced(tmp_path) -> None:
     """
     from contextlib import asynccontextmanager
 
-    from starlette.testclient import TestClient
 
     from engine.domain import ApprovalKind
     from engine.graph_runtime import GraphId, NodeId
@@ -1609,8 +1367,7 @@ def test_an_auto_approved_request_is_not_announced(tmp_path) -> None:
         yield runtime
 
     communications = RecordingCommunications()
-    app, capabilities, _ = _app(
-        tmp_path,
+    app, capabilities, _ = slack_app(
         communications,
         WorkOrdersConfig(repository="acme/api", workflow="implementation-review-v1"),
         WorkflowCatalog.from_graphs((graph,)),
@@ -1622,10 +1379,10 @@ def test_an_auto_approved_request_is_not_announced(tmp_path) -> None:
         "type": "app_mention", "channel": "C", "user": "U", "ts": "1",
         "text": "<@BOT> new workorder please",
     }}).encode()
-    with TestClient(app) as client:
-        assert client.post("/api/slack/events", content=body, headers=_signed(body)).status_code == 200
-        client.portal.call(app.state.slack_ingress.drain)
-        runs = client.portal.call(capabilities.state_store.list_runs)
+    with client(app) as browser:
+        assert browser.post("/api/slack/events", content=body, headers=_signed(body)).status_code == 200
+        browser.portal.call(app.state.slack_ingress.drain)
+        runs = browser.portal.call(capabilities.state_store.list_runs)
         assert len(runs) == 1
         run_id = runs[0].run_id
 
@@ -1643,7 +1400,7 @@ def test_an_auto_approved_request_is_not_announced(tmp_path) -> None:
                 while not any("Approve the plan" in text for text in said()):
                     await asyncio.sleep(0.01)
 
-        client.portal.call(reach_the_plan)
+        browser.portal.call(reach_the_plan)
         announced = said()
 
     assert "*implementation* needs your approval: Approve the plan" in announced

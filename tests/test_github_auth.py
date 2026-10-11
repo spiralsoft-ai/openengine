@@ -297,7 +297,9 @@ class TestRefreshAccessToken:
 
 
 @pytest.mark.parametrize("provider", [None, "gh-cli"])
-def test_agent_pr_uses_only_the_gh_cli_login(tmp_path, monkeypatch, caplog, provider):
+def test_agent_pr_uses_only_the_gh_cli_login(
+    tmp_path, monkeypatch, caplog, provider, *, github_auth_app, client
+):
     """Under GH CLI, agents act as `gh auth`, never as a UI connection or GITHUB_TOKEN."""
     from engine.apps.web.composition import Settings, build_capabilities
     from engine.apps.web.source_control import SourceControlPreferences
@@ -351,17 +353,16 @@ def test_agent_pr_uses_only_the_gh_cli_login(tmp_path, monkeypatch, caplog, prov
 
     # Before and after a Settings device flow, the agent still acts as `gh`.
     assert asyncio.run(open_pr()) == "https://github.com/acme/api/pull/42"
-    from starlette.testclient import TestClient
-    app = _make_github_app(tmp_path)
-    with TestClient(app) as client, patch(
+    app = github_auth_app()
+    with client(app) as browser, patch(
         "engine.apps.web.api.start_device_flow",
         AsyncMock(return_value=DeviceFlowState("device", "code", "https://github.com/login/device", 900, 5)),
     ), patch(
         "engine.apps.web.api.poll_device_flow",
         AsyncMock(return_value=DeviceFlowComplete("personal-token", "personal-refresh")),
     ):
-        assert client.post("/api/github/connect").status_code == 200
-        assert client.post("/api/github/connect/poll").json() == {"status": "complete"}
+        assert browser.post("/api/github/connect").status_code == 200
+        assert browser.post("/api/github/connect/poll").json() == {"status": "complete"}
     assert GitHubCredentialStore().get() == "personal-token"
     assert asyncio.run(open_pr()) == "https://github.com/acme/api/pull/42"
 
@@ -377,7 +378,9 @@ def test_agent_pr_uses_only_the_gh_cli_login(tmp_path, monkeypatch, caplog, prov
     assert "personal-token" not in caplog.text
 
 
-def test_agent_pr_under_github_oauth_uses_the_connected_token_read_once(tmp_path, monkeypatch):
+def test_agent_pr_under_github_oauth_uses_the_connected_token_read_once(
+    tmp_path, monkeypatch, *, github_auth_app, client
+):
     """The token `engine connect github` saved opens the PR, with no second keychain read."""
     from engine.apps.web.composition import Settings, build_capabilities
     from engine.apps.web.source_control import SourceControlPreferences
@@ -409,18 +412,17 @@ def test_agent_pr_under_github_oauth_uses_the_connected_token_read_once(tmp_path
     monkeypatch.setattr(adapter, "_root_path", AsyncMock(return_value=str(tmp_path)))
     monkeypatch.setattr(adapter, "_repo_coords", AsyncMock(return_value=("acme", "api")))
 
-    from starlette.testclient import TestClient
-    app = _make_github_app(tmp_path, credential_store=store)
-    with TestClient(app) as client, patch(
+    app = github_auth_app(credential_store=store)
+    with client(app) as browser, patch(
         "engine.apps.web.api.start_device_flow",
         AsyncMock(return_value=DeviceFlowState("device", "code", "https://github.com/login/device", 900, 5)),
     ), patch(
         "engine.apps.web.api.poll_device_flow",
         AsyncMock(return_value=DeviceFlowComplete("personal-token", "personal-refresh")),
     ):
-        assert client.post("/api/github/connect").status_code == 200
-        assert client.post("/api/github/connect/poll").json() == {"status": "complete"}
-        assert client.get("/api/github/status").json()["connected"] is True
+        assert browser.post("/api/github/connect").status_code == 200
+        assert browser.post("/api/github/connect/poll").json() == {"status": "complete"}
+        assert browser.get("/api/github/status").json()["connected"] is True
     reads.clear()
 
     recorded = []
@@ -577,50 +579,16 @@ def test_credential_store_ignores_boolean_expiry_values(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _make_github_app(tmp_path, client_id: str = "test-client-id", login_config=None, credential_store=None):
-    """Minimal app wired with stub capabilities (only GitHub auth endpoints under test)."""
-    from engine.adapters.state_store.sqlite import SQLiteStateStore
-    from engine.apps.web.api import create_app
-    from engine.apps.web.github_auth import GitHubCredentialStore
-    from engine.apps.web.source_control import SourceControlPreferences
-    from engine.runtime import AgentSession, Capabilities
-
-    _stub = object()
-    store = SQLiteStateStore(str(tmp_path / "t.sqlite3"))
-    caps = Capabilities(
-        workflow_runtime=_stub,
-        source_control=_stub,
-        agent_runner=_stub,
-        communications=_stub,
-        workspace_provider=_stub,
-        state_store=store,
-    )
-    _runner_stub = {"default": _stub}
-    session = AgentSession(caps, profiles={}, runners=_runner_stub)
-    credential_store = credential_store or GitHubCredentialStore()
-    app = create_app(
-        session,
-        _runner_stub,
-        credential_store=credential_store,
-        github_client_id=client_id,
-        github_login_config=login_config,
-        source_control_preferences=SourceControlPreferences(tmp_path / "settings.json"),
-    )
-    return app
-
-
 class TestCsrfGuard:
     """Mutating GitHub endpoints must reject cross-origin requests."""
 
-    def _post(self, app, path: str, origin: str | None = None):
-        from starlette.testclient import TestClient
-
+    def _post(self, app, path: str, origin: str | None = None, *, client):
         headers = {"origin": origin} if origin else {}
-        with TestClient(app, raise_server_exceptions=True) as client:
-            return client.post(path, headers=headers)
+        with client(app, raise_server_exceptions=True) as browser:
+            return browser.post(path, headers=headers)
 
-    def test_connect_from_localhost_origin_is_allowed(self, tmp_path):
-        app = _make_github_app(tmp_path)
+    def test_connect_from_localhost_origin_is_allowed(self, *, github_auth_app, client):
+        app = github_auth_app()
         with patch(
             "engine.apps.web.api.start_device_flow",
             new=AsyncMock(
@@ -634,42 +602,46 @@ class TestCsrfGuard:
             ),
         ):
             resp = self._post(
-                app, "/api/github/connect", origin="http://localhost:4364"
+                app, "/api/github/connect", origin="http://localhost:4364",
+                client=client,
             )
         assert resp.status_code != 403
 
-    def test_connect_from_cross_origin_is_rejected(self, tmp_path):
-        app = _make_github_app(tmp_path)
-        resp = self._post(app, "/api/github/connect", origin="https://evil.example.com")
+    def test_connect_from_cross_origin_is_rejected(self, *, github_auth_app, client):
+        app = github_auth_app()
+        resp = self._post(app, "/api/github/connect", origin="https://evil.example.com", client=client)
         assert resp.status_code == 403
 
-    def test_connect_from_lookalike_localhost_origin_is_rejected(self, tmp_path):
-        app = _make_github_app(tmp_path)
+    def test_connect_from_lookalike_localhost_origin_is_rejected(
+        self, *, github_auth_app, client
+    ):
+        app = github_auth_app()
         resp = self._post(
-            app, "/api/github/connect", origin="https://localhost.evil.example.com"
+            app, "/api/github/connect", origin="https://localhost.evil.example.com",
+            client=client,
         )
         assert resp.status_code == 403
 
-    def test_disconnect_from_cross_origin_is_rejected(self, tmp_path):
-        app = _make_github_app(tmp_path)
+    def test_disconnect_from_cross_origin_is_rejected(self, *, github_auth_app, client):
+        app = github_auth_app()
         resp = self._post(
-            app, "/api/github/disconnect", origin="https://evil.example.com"
+            app, "/api/github/disconnect", origin="https://evil.example.com",
+            client=client,
         )
         assert resp.status_code == 403
 
-    def test_disconnect_from_https_localhost_is_allowed(self, tmp_path):
-        app = _make_github_app(tmp_path)
+    def test_disconnect_from_https_localhost_is_allowed(self, *, github_auth_app, client):
+        app = github_auth_app()
         resp = self._post(
-            app, "/api/github/disconnect", origin="https://localhost:8443"
+            app, "/api/github/disconnect", origin="https://localhost:8443",
+            client=client,
         )
         assert resp.status_code == 204
 
-    def test_status_is_exempt_from_csrf_guard(self, tmp_path):
-        from starlette.testclient import TestClient
-
-        app = _make_github_app(tmp_path)
-        with TestClient(app) as client:
-            resp = client.get(
+    def test_status_is_exempt_from_csrf_guard(self, *, github_auth_app, client):
+        app = github_auth_app()
+        with client(app) as browser:
+            resp = browser.get(
                 "/api/github/status", headers={"origin": "https://evil.example.com"}
             )
         assert resp.status_code == 200
@@ -681,10 +653,8 @@ class TestCsrfGuard:
 
 
 class TestPollEndpoint:
-    def test_complete_response_has_no_next_interval(self, tmp_path):
-        from starlette.testclient import TestClient
-
-        app = _make_github_app(tmp_path)
+    def test_complete_response_has_no_next_interval(self, *, github_auth_app, client):
+        app = github_auth_app()
         flow = DeviceFlowState(
             device_code="d",
             user_code="U",
@@ -707,17 +677,15 @@ class TestPollEndpoint:
             ),
             patch("engine.apps.web.oauth_credentials.keyring.set_password"),
         ):
-            with TestClient(app) as client:
-                client.post("/api/github/connect")
-                resp = client.post("/api/github/connect/poll")
+            with client(app) as browser:
+                browser.post("/api/github/connect")
+                resp = browser.post("/api/github/connect/poll")
         body = resp.json()
         assert body["status"] == "complete"
         assert "nextInterval" not in body
 
-    def test_pending_response_carries_next_interval(self, tmp_path):
-        from starlette.testclient import TestClient
-
-        app = _make_github_app(tmp_path)
+    def test_pending_response_carries_next_interval(self, *, github_auth_app, client):
+        app = github_auth_app()
         flow = DeviceFlowState(
             device_code="d",
             user_code="U",
@@ -735,9 +703,9 @@ class TestPollEndpoint:
                 new=AsyncMock(return_value=DeviceFlowPending(next_interval=10)),
             ),
         ):
-            with TestClient(app) as client:
-                client.post("/api/github/connect")
-                resp = client.post("/api/github/connect/poll")
+            with client(app) as browser:
+                browser.post("/api/github/connect")
+                resp = browser.post("/api/github/connect/poll")
         body = resp.json()
         assert body["status"] == "pending"
         assert body["nextInterval"] == 10
@@ -745,10 +713,8 @@ class TestPollEndpoint:
 
 class TestSourceControlProviderEndpoint:
     def test_saved_oauth_choice_does_not_probe_gh_cli(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, *, github_auth_app, client
     ) -> None:
-        from starlette.testclient import TestClient
-
         from engine.apps.web.source_control import SourceControlPreferences
 
         SourceControlPreferences(tmp_path / "settings.json").set("github-oauth")
@@ -756,34 +722,32 @@ class TestSourceControlProviderEndpoint:
             "engine.apps.web.source_control.gh_cli_status",
             lambda: pytest.fail("saved OAuth preference must not probe GH CLI"),
         )
-        app = _make_github_app(tmp_path)
-        with TestClient(app) as client:
-            response = client.get("/api/source-control/provider")
+        app = github_auth_app()
+        with client(app) as browser:
+            response = browser.get("/api/source-control/provider")
 
         assert response.json() == {"provider": "github-oauth", "autoSelected": False}
 
     def test_selects_provider_and_rejects_obsolete_gitlab_name(
-        self, tmp_path, monkeypatch
+        self, monkeypatch, *, github_auth_app, client
     ) -> None:
-        from starlette.testclient import TestClient
-
         from engine.apps.web.source_control import GhCliStatus
 
         monkeypatch.setattr(
             "engine.apps.web.source_control.gh_cli_status",
             lambda: GhCliStatus(True, True, account="octocat"),
         )
-        app = _make_github_app(tmp_path)
-        with TestClient(app) as client:
-            status = client.get("/api/source-control/status")
-            selected = client.post(
+        app = github_auth_app()
+        with client(app) as browser:
+            status = browser.get("/api/source-control/status")
+            selected = browser.post(
                 "/api/source-control/provider", json={"provider": "github-oauth"}
             )
-            gitlab = client.post(
+            gitlab = browser.post(
                 "/api/source-control/provider",
                 json={"provider": "gitlab-oauth", "origin": "https://gitlab.com"},
             )
-            rejected = client.post(
+            rejected = browser.post(
                 "/api/source-control/provider", json={"provider": "gitlab"}
             )
 
@@ -823,9 +787,10 @@ def _client_returning(response: httpx.Response) -> _AsyncContextManager:
     return _AsyncContextManager(response)
 
 
-def test_browser_users_have_isolated_credentials_and_device_flows(tmp_path, monkeypatch):
+def test_browser_users_have_isolated_credentials_and_device_flows(
+    monkeypatch, *, github_auth_app, client
+):
     from engine.apps.web.github_login import GitHubLogin, GitHubLoginConfig
-    from starlette.testclient import TestClient
 
     saved = {}
     monkeypatch.setattr(keyring, "get_keyring", _high_priority_backend)
@@ -836,7 +801,7 @@ def test_browser_users_have_isolated_credentials_and_device_flows(tmp_path, monk
     config = GitHubLoginConfig("id", "secret", "https://engine.test/api/auth/github/callback")
     login = GitHubLogin(config)
     monkeypatch.setattr("engine.apps.web.api.GitHubLogin", lambda *_, **__: login)
-    app = _make_github_app(tmp_path, client_id="", login_config=config)
+    app = github_auth_app(client_id="", login_config=config)
     start = AsyncMock(side_effect=[
         DeviceFlowState("alice-device", "alice-code", "https://github.com/login/device", 900, 5),
         DeviceFlowState("bob-device", "bob-code", "https://github.com/login/device", 900, 5),
@@ -844,29 +809,29 @@ def test_browser_users_have_isolated_credentials_and_device_flows(tmp_path, monk
     poll = AsyncMock(side_effect=[DeviceFlowComplete("alice-token"), DeviceFlowComplete("bob-token")])
     monkeypatch.setattr("engine.apps.web.api.start_device_flow", start)
     monkeypatch.setattr("engine.apps.web.api.poll_device_flow", poll)
-    with TestClient(app, base_url="https://engine.test") as client:
+    with client(app, base_url="https://engine.test") as browser:
         def as_user(user_id, name):
-            client.cookies.set("engine_session", login._make_session_cookie(user_id, name))
+            browser.cookies.set("engine_session", login._make_session_cookie(user_id, name))
 
         as_user(1, "alice")
-        assert client.get("/api/github/status").json() == {
+        assert browser.get("/api/github/status").json() == {
             "connected": False, "clientIdConfigured": False, "agentsUseConnection": False
         }
-        assert client.post("/api/github/client-id", json={"clientId": "alice-client"}).status_code == 204
-        assert client.post("/api/github/connect").json()["userCode"] == "alice-code"
+        assert browser.post("/api/github/client-id", json={"clientId": "alice-client"}).status_code == 204
+        assert browser.post("/api/github/connect").json()["userCode"] == "alice-code"
         as_user(2, "bob")
-        assert client.post("/api/github/connect/poll").status_code == 409
-        assert client.get("/api/github/status").json()["clientIdConfigured"] is False
-        assert client.post("/api/github/client-id", json={"clientId": "bob-client"}).status_code == 204
-        assert client.post("/api/github/connect").json()["userCode"] == "bob-code"
+        assert browser.post("/api/github/connect/poll").status_code == 409
+        assert browser.get("/api/github/status").json()["clientIdConfigured"] is False
+        assert browser.post("/api/github/client-id", json={"clientId": "bob-client"}).status_code == 204
+        assert browser.post("/api/github/connect").json()["userCode"] == "bob-code"
         as_user(1, "alice")
-        assert client.post("/api/github/connect/poll").json()["status"] == "complete"
+        assert browser.post("/api/github/connect/poll").json()["status"] == "complete"
         as_user(2, "bob")
-        assert client.get("/api/github/status").json()["connected"] is False
-        assert client.post("/api/github/connect/poll").json()["status"] == "complete"
-        assert client.post("/api/github/disconnect").status_code == 204
+        assert browser.get("/api/github/status").json()["connected"] is False
+        assert browser.post("/api/github/connect/poll").json()["status"] == "complete"
+        assert browser.post("/api/github/disconnect").status_code == 204
         as_user(1, "alice-renamed")
-        assert client.get("/api/github/status").json()["connected"] is True
+        assert browser.get("/api/github/status").json()["connected"] is True
     assert poll.await_args_list[0].args == ("alice-client", "alice-device", 5)
     assert poll.await_args_list[1].args == ("bob-client", "bob-device", 5)
     assert GitHubCredentialStore(user_id=1).get() == "alice-token"

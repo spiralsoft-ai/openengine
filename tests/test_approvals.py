@@ -22,8 +22,6 @@ import httpx
 import pytest
 
 from engine.adapters.state_store.memory import InMemoryStateStore
-from engine.adapters.state_store.sqlite import SQLiteStateStore
-from engine.apps.web.api import create_app
 from engine.domain import (
     AgentId,
     AgentInstanceId,
@@ -240,17 +238,6 @@ def _session(
     )
 
 
-def _app(
-    store: StateStore,
-    runner: object,
-    reader: object | None = None,
-    policy: ApprovalConfig = ApprovalConfig(),
-):
-    return create_app(
-        _session(store, runner, reader), {"test": runner}, approval_policy=policy
-    )
-
-
 async def _thread(client: httpx.AsyncClient) -> str:
     created = await client.post(
         "/api/threads", json={"agentId": "coder", "runner": "test"}
@@ -381,7 +368,7 @@ def test_the_same_edit_is_allowed_for_an_agent_that_is_not_read_only() -> None:
     assert presented[0].decision_source is ApprovalDecisionSource.POLICY
 
 
-def test_a_planning_chat_refuses_the_edit_its_deployment_allows() -> None:
+def test_a_planning_chat_refuses_the_edit_its_deployment_allows(web_app) -> None:
     """The same refusal, down the path a real chat takes.
 
     `ThreadService.start_run` is what installs the handler, so a property proved
@@ -392,11 +379,12 @@ def test_a_planning_chat_refuses_the_edit_its_deployment_allows() -> None:
     store = InMemoryStateStore()
     writer = ClassifyingApprovalRunner((WRITE_FILE,))
     reader = ClassifyingApprovalRunner((WRITE_FILE,))
-    app = _app(
-        store,
-        writer,
-        reader,
-        ApprovalConfig(allow=(ApprovalCapability.READ, ApprovalCapability.EDIT)),
+    app = web_app(
+        _session(store, writer, reader),
+        {"test": writer},
+        approval_policy=ApprovalConfig(
+            allow=(ApprovalCapability.READ, ApprovalCapability.EDIT)
+        ),
     )
     service = app.state.thread_service
 
@@ -426,7 +414,7 @@ def test_a_planning_chat_refuses_the_edit_its_deployment_allows() -> None:
     ]
 
 
-def test_a_chat_asks_the_runner_that_answers_it_whether_it_can_pause() -> None:
+def test_a_chat_asks_the_runner_that_answers_it_whether_it_can_pause(web_app) -> None:
     """Both halves of the handler are read off the runner that runs the turn.
 
     A read-only runner need not be the same kind of object as the write-enabled
@@ -436,7 +424,9 @@ def test_a_chat_asks_the_runner_that_answers_it_whether_it_can_pause() -> None:
     store = InMemoryStateStore()
     writer = ApprovalRunner()
     reader = PlainRunner()
-    service = _app(store, writer, reader).state.thread_service
+    service = web_app(
+        _session(store, writer, reader), {"test": writer}, approval_policy=ApprovalConfig()
+    ).state.thread_service
 
     async def scenario():
         thread = await service.create(PLANNER, "test")
@@ -776,13 +766,11 @@ def test_a_cancelled_turn_is_recorded_as_cancelled_not_failed() -> None:
 
 
 @pytest.fixture(params=["memory", "sqlite"])
-def store(request, tmp_path) -> StateStore:
+def store(request, sqlite_store) -> StateStore:
     """The two stores a running process uses, held to the same contract."""
     if request.param == "memory":
         return InMemoryStateStore()
-    sqlite = SQLiteStateStore(tmp_path / "conversations.sqlite3")
-    request.addfinalizer(sqlite.close)
-    return sqlite
+    return sqlite_store()
 
 
 def test_stores_agree_on_what_an_approval_is(store: StateStore) -> None:
@@ -923,10 +911,10 @@ def test_an_approval_needs_a_conversation_to_belong_to(store: StateStore) -> Non
 # --- the HTTP surface -------------------------------------------------------
 
 
-def test_approving_resumes_the_paused_turn_and_records_the_decision() -> None:
+def test_approving_resumes_the_paused_turn_and_records_the_decision(web_app) -> None:
     store = InMemoryStateStore()
     runner = ApprovalRunner()
-    app = _app(store, runner)
+    app = web_app(_session(store, runner), {"test": runner})
 
     async def scenario():
         transport = httpx.ASGITransport(app=app)
@@ -985,7 +973,7 @@ def test_approving_resumes_the_paused_turn_and_records_the_decision() -> None:
     ] == [("user", "run the tests"), ("assistant", "All tests passed.")]
 
 
-def test_a_decision_reaches_the_client_even_when_the_turn_asks_again() -> None:
+def test_a_decision_reaches_the_client_even_when_the_turn_asks_again(web_app) -> None:
     """Otherwise the card you just answered waits on an answer it already got.
 
     A turn let go by a decision usually asks its next question immediately --
@@ -996,7 +984,7 @@ def test_a_decision_reaches_the_client_even_when_the_turn_asks_again() -> None:
     """
     store = InMemoryStateStore()
     runner = ApprovalRunner([RUN_TESTS, WRITE_FILE])
-    app = _app(store, runner)
+    app = web_app(_session(store, runner), {"test": runner})
 
     async def scenario():
         transport = httpx.ASGITransport(app=app)
@@ -1034,10 +1022,10 @@ def test_a_decision_reaches_the_client_even_when_the_turn_asks_again() -> None:
     assert runner.executed == ["pytest", "Write"]
 
 
-def test_cancelling_a_request_ends_the_turn_without_running_the_action() -> None:
+def test_cancelling_a_request_ends_the_turn_without_running_the_action(web_app) -> None:
     store = InMemoryStateStore()
     runner = ApprovalRunner()
-    app = _app(store, runner)
+    app = web_app(_session(store, runner), {"test": runner})
 
     async def scenario():
         transport = httpx.ASGITransport(app=app)
@@ -1067,10 +1055,10 @@ def test_cancelling_a_request_ends_the_turn_without_running_the_action() -> None
     assert _lines(streamed)[-1]["type"] == "done"
 
 
-def test_a_second_decision_on_the_same_request_is_refused() -> None:
+def test_a_second_decision_on_the_same_request_is_refused(web_app) -> None:
     store = InMemoryStateStore()
     runner = ApprovalRunner()
-    app = _app(store, runner)
+    app = web_app(_session(store, runner), {"test": runner})
 
     async def scenario():
         transport = httpx.ASGITransport(app=app)
@@ -1103,12 +1091,12 @@ def test_a_second_decision_on_the_same_request_is_refused() -> None:
     [("maybe", "unknown decision"), ("accept_for_session", "not one of the decisions")],
 )
 def test_a_decision_the_request_never_offered_is_refused(
-    decision: str, detail: str
+    decision: str, detail: str, *, web_app
 ) -> None:
     """Including one that exists: the provider decides what it can honour."""
     store = InMemoryStateStore()
     runner = ApprovalRunner([WRITE_FILE])
-    app = _app(store, runner)
+    app = web_app(_session(store, runner), {"test": runner})
 
     async def scenario():
         transport = httpx.ASGITransport(app=app)
@@ -1137,10 +1125,10 @@ def test_a_decision_the_request_never_offered_is_refused(
     assert runner.executed == []
 
 
-def test_a_request_from_a_finished_run_cannot_be_answered_later() -> None:
+def test_a_request_from_a_finished_run_cannot_be_answered_later(web_app) -> None:
     store = InMemoryStateStore()
     runner = ApprovalRunner([RUN_TESTS, WRITE_FILE])
-    app = _app(store, runner)
+    app = web_app(_session(store, runner), {"test": runner})
 
     async def scenario():
         transport = httpx.ASGITransport(app=app)
@@ -1188,10 +1176,10 @@ def test_a_request_from_a_finished_run_cannot_be_answered_later() -> None:
     assert runner.executed == ["pytest", "Write"]
 
 
-def test_another_conversations_request_is_not_found_here() -> None:
+def test_another_conversations_request_is_not_found_here(web_app) -> None:
     store = InMemoryStateStore()
     runner = ApprovalRunner()
-    app = _app(store, runner)
+    app = web_app(_session(store, runner), {"test": runner})
 
     async def scenario():
         transport = httpx.ASGITransport(app=app)
@@ -1219,10 +1207,10 @@ def test_another_conversations_request_is_not_found_here() -> None:
     assert runner.executed == []
 
 
-def test_a_reconnecting_browser_is_told_what_the_run_is_waiting_on() -> None:
+def test_a_reconnecting_browser_is_told_what_the_run_is_waiting_on(web_app) -> None:
     store = InMemoryStateStore()
     runner = ApprovalRunner()
-    app = _app(store, runner)
+    app = web_app(_session(store, runner), {"test": runner})
     service = app.state.thread_service
 
     async def scenario():
@@ -1260,10 +1248,10 @@ def test_a_reconnecting_browser_is_told_what_the_run_is_waiting_on() -> None:
     assert runner.executed == ["pytest"]
 
 
-def test_stopping_a_waiting_run_cancels_the_request_and_the_turn() -> None:
+def test_stopping_a_waiting_run_cancels_the_request_and_the_turn(web_app) -> None:
     store = InMemoryStateStore()
     runner = ApprovalRunner()
-    app = _app(store, runner)
+    app = web_app(_session(store, runner), {"test": runner})
     service = app.state.thread_service
 
     async def scenario():
@@ -1307,10 +1295,12 @@ def test_stopping_a_waiting_run_cancels_the_request_and_the_turn() -> None:
     ][-1] == "decided"
 
 
-def test_a_provider_that_dies_mid_question_leaves_the_request_interrupted() -> None:
+def test_a_provider_that_dies_mid_question_leaves_the_request_interrupted(
+    web_app,
+) -> None:
     store = InMemoryStateStore()
     runner = DyingApprovalRunner()
-    app = _app(store, runner)
+    app = web_app(_session(store, runner), {"test": runner})
 
     async def scenario():
         transport = httpx.ASGITransport(app=app)
@@ -1342,10 +1332,12 @@ def test_a_provider_that_dies_mid_question_leaves_the_request_interrupted() -> N
     ][-1] == "interrupted"
 
 
-def test_a_restart_interrupts_the_requests_it_cannot_resume(tmp_path) -> None:
+def test_a_restart_interrupts_the_requests_it_cannot_resume(
+    tmp_path, *, sqlite_store, web_app
+) -> None:
     """The CLI died with the server, so its question can no longer be put."""
     database = tmp_path / "conversations.sqlite3"
-    before = SQLiteStateStore(database)
+    before = sqlite_store(database)
     instance = asyncio.run(before.create_instance(CODER, runner="test"))
     asyncio.run(
         before.record_approval(
@@ -1364,8 +1356,9 @@ def test_a_restart_interrupts_the_requests_it_cannot_resume(tmp_path) -> None:
     )
     before.close()
 
-    after = SQLiteStateStore(database)
-    app = _app(after, ApprovalRunner())
+    after = sqlite_store(database)
+    runner = ApprovalRunner()
+    app = web_app(_session(after, runner), {"test": runner}, approval_policy=ApprovalConfig())
 
     async def scenario():
         transport = httpx.ASGITransport(app=app)
@@ -1744,11 +1737,11 @@ def test_a_revoked_grant_stops_answering() -> None:
     assert asyncio.run(scenario())[0].is_pending
 
 
-def test_a_granted_action_does_not_pause_the_next_turn_of_a_chat() -> None:
+def test_a_granted_action_does_not_pause_the_next_turn_of_a_chat(web_app) -> None:
     """The same thing again, through the whole stack the browser talks to."""
     store = InMemoryStateStore()
     runner = ApprovalRunner()
-    app = _app(store, runner)
+    app = web_app(_session(store, runner), {"test": runner})
 
     async def scenario():
         transport = httpx.ASGITransport(app=app)
@@ -1801,10 +1794,10 @@ def test_a_granted_action_does_not_pause_the_next_turn_of_a_chat() -> None:
     ]
 
 
-def test_a_runner_that_cannot_pause_runs_exactly_as_before() -> None:
+def test_a_runner_that_cannot_pause_runs_exactly_as_before(web_app) -> None:
     store = InMemoryStateStore()
     runner = PlainRunner()
-    app = _app(store, runner)
+    app = web_app(_session(store, runner), {"test": runner})
 
     async def scenario():
         transport = httpx.ASGITransport(app=app)
@@ -1974,11 +1967,13 @@ def test_a_runner_whose_requests_nobody_can_read_is_asked_about_regardless() -> 
     assert presented[0].is_pending
 
 
-def test_a_turn_the_policy_covers_runs_start_to_finish_without_a_prompt() -> None:
+def test_a_turn_the_policy_covers_runs_start_to_finish_without_a_prompt(
+    web_app,
+) -> None:
     """The whole of it, over HTTP: nothing pending, and the action happened."""
     store = InMemoryStateStore()
     runner = PolicyRunner(requests=(RUN_TESTS, RUN_LINT))
-    app = create_app(
+    app = web_app(
         _session(store, runner),
         {"test": runner},
         approval_policy=ApprovalConfig(

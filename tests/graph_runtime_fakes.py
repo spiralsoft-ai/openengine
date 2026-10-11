@@ -39,6 +39,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import count
 
+from engine.graph_runtime.inputs import WorkflowInput, mode_input
+
 from engine.domain import ApprovalDecision, ApprovalId, ApprovalKind, RunId
 from engine.graph_runtime import (
     CANCELLED,
@@ -953,6 +955,22 @@ __all__ = [
     "Say",
     "ScriptedFailure",
     "ScriptedGraph",
+    "InputGraph",
+    "ModeGraph",
     "ScriptedGraphRuntime",
     "ScriptedNode",
 ]
+
+
+@dataclass(frozen=True)
+class ModeGraph(ScriptedGraph):
+    """A scripted workflow exposing the standard connected/disconnected input."""
+
+    inputs: tuple[WorkflowInput, ...] = (mode_input(),)
+
+
+@dataclass(frozen=True)
+class InputGraph(ScriptedGraph):
+    """A scripted workflow with test-selected input declarations."""
+
+    inputs: tuple[WorkflowInput, ...] = ()

@@ -37,7 +37,6 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
-import httpx
 
 from engine.domain import TRIAGE_TOOL, ApprovalDecision, ApprovalKind, RunId, WorkspaceId
 from engine.graph_runtime import EventLog, GraphCompilationError, RuntimeEvent, create_app
@@ -204,7 +203,9 @@ async def until(
 # --- naming a graph ----------------------------------------------------------
 
 
-def test_graph_workspace_detaches_and_reattaches_across_restart(tmp_path: Path) -> None:
+def test_graph_workspace_detaches_and_reattaches_across_restart(
+    tmp_path: Path, *, async_client
+) -> None:
     class Provider(RecordingWorkspaceProvider):
         detached: bool = False
         restored: tuple[WorkspaceId, str, str] | None = None
@@ -231,9 +232,7 @@ def test_graph_workspace_detaches_and_reattaches_across_restart(tmp_path: Path) 
         workflow = assembled(provider, seen)
         async with running([workflow], tmp_path) as (runtime, _log):
             app = create_app(runtime)
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
-            ) as client:
+            async with async_client(app, base_url="http://test") as client:
                 run = await runtime.start(workflow.graph_id, {"repository": REPOSITORY})
                 async with asyncio.timeout(PATIENCE):
                     while not (await runtime.snapshot(run.run_id)).pending_approvals:
@@ -255,9 +254,7 @@ def test_graph_workspace_detaches_and_reattaches_across_restart(tmp_path: Path) 
 
         async with running([workflow], tmp_path) as (runtime, _log):
             app = create_app(runtime)
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
-            ) as client:
+            async with async_client(app, base_url="http://test") as client:
                 assert (await client.get(endpoint)).json()["workspaceAttached"] is False
                 refused = await client.post(
                     f"/api/runs/{run.run_id}/transitions",

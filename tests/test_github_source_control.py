@@ -40,13 +40,9 @@ def _git(repository: Path, *arguments: str) -> str:
     ).stdout.strip()
 
 
-def _checkout(path: Path, branch: str = "main") -> GitHubSourceControl:
+def _checkout(path: Path, branch: str = "main", *, git_repo) -> GitHubSourceControl:
     """A real repository on `branch`, and a source control pointed at it."""
-    path.mkdir()
-    _git(path, "init", "-b", branch)
-    (path / "README.md").write_text("engine\n")
-    _git(path, "add", "README.md")
-    _git(path, *_IDENTITY, "commit", "-m", "initial")
+    git_repo(path, branch, commit=True)
     _git(path, "config", "user.name", "Engine Tests")
     _git(path, "config", "user.email", "engine@example.test")
     # A remote that exists but is never reachable: the guards under test have
@@ -59,9 +55,9 @@ def _checkout(path: Path, branch: str = "main") -> GitHubSourceControl:
 # --- git runs in the workspace, and any subcommand is reachable -------------
 
 
-def test_any_subcommand_runs_in_the_workspace(tmp_path: Path) -> None:
+def test_any_subcommand_runs_in_the_workspace(tmp_path: Path, *, git_repo) -> None:
     """The point of the passthrough: no menu, and one bounded directory."""
-    source_control = _checkout(tmp_path / "checkout")
+    source_control = _checkout(tmp_path / "checkout", git_repo=git_repo)
 
     branches = asyncio.run(
         source_control.run_git(WORKSPACE, ["rev-parse", "--abbrev-ref", "HEAD"])
@@ -77,11 +73,11 @@ def test_any_subcommand_runs_in_the_workspace(tmp_path: Path) -> None:
 
 
 def test_a_multi_line_commit_message_survives_being_an_argument(
-    tmp_path: Path,
+    tmp_path: Path, *, git_repo
 ) -> None:
     """An argument vector, not a command line: nothing is split or quoted."""
     checkout = tmp_path / "checkout"
-    source_control = _checkout(checkout)
+    source_control = _checkout(checkout, git_repo=git_repo)
     (checkout / "greeting.txt").write_text("hello\n")
     message = "feat: add a greeting\n\nWith a body that has its own lines."
 
@@ -94,14 +90,16 @@ def test_a_multi_line_commit_message_survives_being_an_argument(
     assert _git(checkout, "log", "-1", "--format=%B").strip() == message
 
 
-def test_a_failing_command_is_reported_rather_than_raised(tmp_path: Path) -> None:
+def test_a_failing_command_is_reported_rather_than_raised(
+    tmp_path: Path, *, git_repo
+) -> None:
     """Half of git answers questions with its exit code.
 
     `diff --exit-code` says "there are changes" that way, so raising on every
     non-zero exit would make a whole class of git unusable through the tool.
     """
     checkout = tmp_path / "checkout"
-    source_control = _checkout(checkout)
+    source_control = _checkout(checkout, git_repo=git_repo)
     (checkout / "README.md").write_text("changed\n")
 
     result = asyncio.run(source_control.run_git(WORKSPACE, ["diff", "--exit-code"]))
@@ -114,8 +112,8 @@ def test_a_failing_command_is_reported_rather_than_raised(tmp_path: Path) -> Non
     assert "frobnicate" in unknown.stderr
 
 
-def test_git_needs_at_least_one_argument(tmp_path: Path) -> None:
-    source_control = _checkout(tmp_path / "checkout")
+def test_git_needs_at_least_one_argument(tmp_path: Path, *, git_repo) -> None:
+    source_control = _checkout(tmp_path / "checkout", git_repo=git_repo)
 
     with pytest.raises(ValueError):
         asyncio.run(source_control.run_git(WORKSPACE, []))
@@ -133,28 +131,26 @@ def test_git_needs_at_least_one_argument(tmp_path: Path) -> None:
     ],
 )
 def test_an_internal_branch_is_never_published(
-    tmp_path: Path, arguments: list[str]
+    tmp_path: Path, arguments: list[str], *, git_repo
 ) -> None:
     """`engine/<workspace>` is Engine's bookkeeping, not a proposed change.
 
     Enforced here rather than asked for in a prompt, which is the difference
     between a rule and a suggestion.
     """
-    source_control = _checkout(tmp_path / "checkout")
+    source_control = _checkout(tmp_path / "checkout", git_repo=git_repo)
 
     with pytest.raises(InternalBranchPublicationError):
         asyncio.run(source_control.run_git(WORKSPACE, arguments))
 
 
-def test_a_push_naming_no_refspec_is_refused(
-    tmp_path: Path,
-) -> None:
+def test_a_push_naming_no_refspec_is_refused(tmp_path: Path, *, git_repo) -> None:
     """The refusable case with nothing in argv to refuse.
 
     `git push` says nothing about which source or destination its configuration
     will choose, so there is no branch name in argv for the guard to validate.
     """
-    source_control = _checkout(tmp_path / "checkout", branch="engine/ws-under-test")
+    source_control = _checkout(tmp_path / "checkout", branch="engine/ws-under-test", git_repo=git_repo)
 
     with pytest.raises(InternalBranchPublicationError):
         asyncio.run(source_control.run_git(WORKSPACE, ["push", "origin"]))
@@ -173,19 +169,19 @@ def test_a_push_naming_no_refspec_is_refused(
     ],
 )
 def test_ambiguous_and_bulk_pushes_are_refused(
-    tmp_path: Path, arguments: list[str]
+    tmp_path: Path, arguments: list[str], *, git_repo
 ) -> None:
     """Every allowed branch push identifies its remote destination in argv."""
-    source_control = _checkout(tmp_path / "checkout", branch="engine/ws-under-test")
+    source_control = _checkout(tmp_path / "checkout", branch="engine/ws-under-test", git_repo=git_repo)
 
     with pytest.raises(InternalBranchPublicationError):
         asyncio.run(source_control.run_git(WORKSPACE, arguments))
 
 
-def test_a_descriptive_branch_is_not_refused(tmp_path: Path) -> None:
+def test_a_descriptive_branch_is_not_refused(tmp_path: Path, *, git_repo) -> None:
     """The guard is about one prefix, and must not read as "no pushing"."""
     checkout = tmp_path / "checkout"
-    source_control = _checkout(checkout)
+    source_control = _checkout(checkout, git_repo=git_repo)
     _git(checkout, "branch", "agent/add-a-greeting")
 
     # Reaching git at all is the assertion: the push then fails on the remote
@@ -198,8 +194,10 @@ def test_a_descriptive_branch_is_not_refused(tmp_path: Path) -> None:
     assert "nowhere.git" in f"{result.stderr}\n{result.stdout}"
 
 
-def test_head_is_safe_when_its_destination_is_explicit(tmp_path: Path) -> None:
-    source_control = _checkout(tmp_path / "checkout")
+def test_head_is_safe_when_its_destination_is_explicit(
+    tmp_path: Path, *, git_repo
+) -> None:
+    source_control = _checkout(tmp_path / "checkout", git_repo=git_repo)
 
     result = asyncio.run(
         source_control.run_git(
@@ -223,7 +221,7 @@ def test_head_is_safe_when_its_destination_is_explicit(tmp_path: Path) -> None:
     ],
 )
 def test_git_global_options_cannot_select_config_or_executables(
-    tmp_path: Path, arguments: list[str]
+    tmp_path: Path, arguments: list[str], *, git_repo
 ) -> None:
     """Global git options can be process launchers in disguise.
 
@@ -231,14 +229,14 @@ def test_git_global_options_cannot_select_config_or_executables(
     allowlist also covers the next global option git adds without requiring a
     security reviewer to hear about it first.
     """
-    source_control = _checkout(tmp_path / "checkout")
+    source_control = _checkout(tmp_path / "checkout", git_repo=git_repo)
 
     with pytest.raises((GitGlobalOptionError, GitOutsideWorkspaceError)):
         asyncio.run(source_control.run_git(WORKSPACE, arguments))
 
 
-def test_value_free_safe_global_options_still_pass(tmp_path: Path) -> None:
-    source_control = _checkout(tmp_path / "checkout")
+def test_value_free_safe_global_options_still_pass(tmp_path: Path, *, git_repo) -> None:
+    source_control = _checkout(tmp_path / "checkout", git_repo=git_repo)
 
     result = asyncio.run(
         source_control.run_git(WORKSPACE, ["--no-pager", "rev-parse", "HEAD"])
@@ -269,11 +267,11 @@ def test_git_without_a_workspace_provider_says_so() -> None:
 
 
 def test_opening_a_review_proposes_against_the_base_branch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, git_repo
 ) -> None:
     """A workflow's base is written `origin/main`; GitHub wants `main`."""
     checkout = tmp_path / "checkout"
-    source_control = _checkout(checkout)
+    source_control = _checkout(checkout, git_repo=git_repo)
     api_calls: list[tuple[str, str, dict]] = []
 
     async def fake_api(self_inner, method: str, path: str, **kwargs: object) -> dict:
@@ -300,10 +298,10 @@ def test_opening_a_review_proposes_against_the_base_branch(
 
 
 def test_a_base_branch_with_a_slash_in_it_is_left_alone(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, git_repo
 ) -> None:
     """`release/2.0` is a branch name, not a remote and a branch."""
-    source_control = _checkout(tmp_path / "checkout")
+    source_control = _checkout(tmp_path / "checkout", git_repo=git_repo)
     api_calls: list[tuple[str, str, dict]] = []
 
     async def fake_api(self_inner, method: str, path: str, **kwargs: object) -> dict:
@@ -321,8 +319,10 @@ def test_a_base_branch_with_a_slash_in_it_is_left_alone(
     assert api_calls[0][2]["base"] == "release/2.0"
 
 
-def test_a_review_is_never_opened_for_an_internal_branch(tmp_path: Path) -> None:
-    source_control = _checkout(tmp_path / "checkout")
+def test_a_review_is_never_opened_for_an_internal_branch(
+    tmp_path: Path, *, git_repo
+) -> None:
+    source_control = _checkout(tmp_path / "checkout", git_repo=git_repo)
 
     with pytest.raises(InternalBranchPublicationError):
         asyncio.run(
@@ -810,9 +810,11 @@ def test_reaction_transport_errors_are_surfaced():
 
 @pytest.mark.parametrize("resolution,keyword", [("resolves", "Resolves"), ("refs", "Refs")])
 @pytest.mark.parametrize("issue_repo,reference", [("acme/api", "#7"), ("acme/other", "acme/other#7")])
-def test_issue_publication_normalizes_body_and_head(monkeypatch, tmp_path, resolution, keyword, issue_repo, reference):
+def test_issue_publication_normalizes_body_and_head(
+    monkeypatch, tmp_path, resolution, keyword, issue_repo, reference, *, git_repo
+):
     from unittest.mock import AsyncMock
-    source = _checkout(tmp_path / "checkout", "agent/issue")
+    source = _checkout(tmp_path / "checkout", "agent/issue", git_repo=git_repo)
     calls = []
     async def git(root, arguments):
         calls.append(arguments)
@@ -906,13 +908,13 @@ def test_resolving_foreign_thread_or_graphql_failure_is_refused():
         asyncio.run(source.resolve_review_thread("https://github.com/acme/api/pull/7", "PRRT_1"))
 
 
-def test_first_issue_pr_appends_metadata_and_keeps_credit_once(tmp_path):
+def test_first_issue_pr_appends_metadata_and_keeps_credit_once(tmp_path, *, git_repo):
     from unittest.mock import AsyncMock
     from engine.adapters.workspace_provider.git_worktree import _credit
     root = tmp_path / "checkout"
-    source = _checkout(root, "main")
+    source = _checkout(root, "main", git_repo=git_repo)
     remote = tmp_path / "remote.git"
-    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    git_repo(remote, bare=True)
     _git(root, "remote", "set-url", "origin", str(remote))
     _git(root, "push", "origin", "main")
     _git(root, "checkout", "-b", "agent/issue")
@@ -1063,11 +1065,13 @@ def test_targeted_reply_does_not_reuse_another_authors_comment():
     assert source._api.await_args.args[1].endswith("/41/replies")
 
 
-def test_issue_head_fast_forward_preserves_a_concurrent_remote_push(tmp_path):
+def test_issue_head_fast_forward_preserves_a_concurrent_remote_push(
+    tmp_path, *, git_repo
+):
     root = tmp_path / "checkout"
-    source = _checkout(root)
+    source = _checkout(root, git_repo=git_repo)
     remote = tmp_path / "remote.git"
-    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    git_repo(remote, bare=True)
     _git(root, "remote", "set-url", "origin", str(remote))
     _git(root, "push", "origin", "main")
     _git(root, "checkout", "-b", "agent/issue")
@@ -1091,12 +1095,14 @@ def test_issue_head_fast_forward_preserves_a_concurrent_remote_push(tmp_path):
 
 @pytest.mark.parametrize("branch", ["main", "trunk", "release/stable"])
 @pytest.mark.parametrize("prefix", ["", "origin/"])
-def test_issue_publication_refuses_base_even_without_remote_protection(tmp_path, branch, prefix):
+def test_issue_publication_refuses_base_even_without_remote_protection(
+    tmp_path, branch, prefix, *, git_repo
+):
     from unittest.mock import AsyncMock
     root = tmp_path / "checkout"
-    source = _checkout(root, branch)
+    source = _checkout(root, branch, git_repo=git_repo)
     remote = tmp_path / "remote.git"
-    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    git_repo(remote, bare=True)
     _git(root, "remote", "set-url", "origin", str(remote))
     _git(root, "push", "origin", branch)
     old = _git(root, "rev-parse", "HEAD")
@@ -1128,11 +1134,11 @@ def test_issue_body_normalizes_colon_keywords(keyword, separator, resolution, re
 
 
 @pytest.mark.parametrize("accepted", [False, True])
-def test_issue_head_failed_push_can_be_retried(tmp_path, accepted):
+def test_issue_head_failed_push_can_be_retried(tmp_path, accepted, *, git_repo):
     root = tmp_path / "checkout"
-    source = _checkout(root, "agent/issue")
+    source = _checkout(root, "agent/issue", git_repo=git_repo)
     remote = tmp_path / "remote.git"
-    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    git_repo(remote, bare=True)
     _git(root, "remote", "set-url", "origin", str(remote))
     _git(root, "push", "origin", "agent/issue")
     original = _git(root, "rev-parse", "HEAD")
@@ -1168,11 +1174,13 @@ def test_review_thread_stops_after_matching_page():
 
 
 @pytest.mark.parametrize("failure", ["remote_unavailable", "local_move"])
-def test_issue_head_recovery_preserves_uncertain_or_concurrent_state(tmp_path, failure):
+def test_issue_head_recovery_preserves_uncertain_or_concurrent_state(
+    tmp_path, failure, *, git_repo
+):
     root = tmp_path / "checkout"
-    source = _checkout(root, "agent/issue")
+    source = _checkout(root, "agent/issue", git_repo=git_repo)
     remote = tmp_path / "remote.git"
-    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    git_repo(remote, bare=True)
     _git(root, "remote", "set-url", "origin", str(remote))
     _git(root, "push", "origin", "agent/issue")
     checked = source._git_checked
@@ -1212,11 +1220,13 @@ for separator in (" " * 100_000, " " * 100_000 + ":" + " " * 100_000):
 
 @pytest.mark.parametrize("rewrite", ["insteadOf", "pushInsteadOf"])
 @pytest.mark.parametrize("remote", ["https://github.com/acme/api.git", "git@github.com:acme/api.git", "origin"])
-def test_force_push_checks_rewritten_destination(tmp_path, rewrite, remote):
+def test_force_push_checks_rewritten_destination(
+    tmp_path, rewrite, remote, *, git_repo
+):
     from unittest.mock import AsyncMock
 
     root = tmp_path / "checkout"
-    source = _checkout(root, "agent/change")
+    source = _checkout(root, "agent/change", git_repo=git_repo)
     literal = remote if remote != "origin" else "https://github.com/acme/api.git"
     _git(root, "remote", "set-url", "origin", literal)
     _git(root, "config", f"url.https://github.com/acme/other.git.{rewrite}", literal)

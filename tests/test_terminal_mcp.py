@@ -1662,7 +1662,9 @@ def test_a_remote_naming_no_forge_project_names_none(remote_url: str) -> None:
 
 
 @pytest.mark.parametrize("rewrite", ["insteadOf", "pushInsteadOf"])
-def test_redirected_literal_url_push_cannot_claim_an_existing_pr(tmp_path, rewrite):
+def test_redirected_literal_url_push_cannot_claim_an_existing_pr(
+    tmp_path, rewrite, *, git_repo
+):
     """A real redirected push changes a mirror, while the forge PR stays put."""
     import dataclasses
     import subprocess
@@ -1676,8 +1678,8 @@ def test_redirected_literal_url_push_cannot_claim_an_existing_pr(tmp_path, rewri
         ).stdout.strip()
 
     checkout, mirror = tmp_path / "checkout", tmp_path / "mirror.git"
-    git("init", "--bare", str(mirror))
-    git("init", "-b", "feature", str(checkout))
+    git_repo(mirror, bare=True)
+    git_repo(checkout, branch="feature")
     git("-C", str(checkout), "-c", "user.name=Test", "-c", "user.email=test@example.com",
         "commit", "--allow-empty", "-m", "initial")
     sha = git("-C", str(checkout), "rev-parse", "HEAD")

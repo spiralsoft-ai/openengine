@@ -21,13 +21,9 @@ from engine.apps.web.github_activity import (
 from engine.apps.web.github_ingress import GithubComment
 from engine.runtime import WorkOrdersConfig
 
-from test_slack_work_orders import (
-    SIGNING_SECRET,
-    FakeACPProvider,
-    RecordingCommunications,
-    _app,
-    _workflow_catalog,
-)
+from test_slack_work_orders import SIGNING_SECRET, _workflow_catalog
+from provider_fakes import FakeACPProvider
+from web_fakes import RecordingCommunications
 
 
 def _comment(
@@ -262,18 +258,22 @@ def test_the_panel_is_told_a_webhook_will_never_deliver_anything() -> None:
 # --- what the route answers ------------------------------------------------
 
 
-def test_the_route_reports_a_comment_all_the_way_to_its_reply(tmp_path) -> None:
-    from starlette.testclient import TestClient
+def test_the_route_reports_a_comment_all_the_way_to_its_reply(
+    *, slack_app, client
+) -> None:
     from test_github_concierge import _graph_runtime
     from test_github_ingress import _issue_comment, _signed as github_signed
 
     _runtime, opened = _graph_runtime()
-    app, capabilities, _ = _app(
-        tmp_path, RecordingCommunications(),
-        WorkOrdersConfig(repository="acme/api", workflow="implementation-review-v1",
-                         runner="default"),
-        _workflow_catalog(), provider=FakeACPProvider(create=True),
-        github_webhook_secret=SIGNING_SECRET, graph_runtime=opened,
+    app, capabilities, _ = slack_app(
+        RecordingCommunications(),
+        WorkOrdersConfig(
+            repository="acme/api", workflow="implementation-review-v1", runner="default"
+        ),
+        _workflow_catalog(),
+        provider=FakeACPProvider(create=True),
+        github_webhook_secret=SIGNING_SECRET,
+        graph_runtime=opened,
     )
     source_control = MagicMock()
     source_control.add_comment = AsyncMock()
@@ -284,12 +284,12 @@ def test_the_route_reports_a_comment_all_the_way_to_its_reply(tmp_path) -> None:
     payload = _issue_comment(1, "new workorder please")
     payload["issue"]["pull_request"] = {}
     body = json.dumps(payload).encode()
-    with TestClient(app) as client:
-        assert client.post("/api/github/events", content=body, headers=dict(
+    with client(app) as browser:
+        assert browser.post("/api/github/events", content=body, headers=dict(
             github_signed(body), **{"x-github-event": "issue_comment"})).status_code == 200
-        client.portal.call(app.state.github_ingress.drain)
+        browser.portal.call(app.state.github_ingress.drain)
 
-        feed = client.get("/api/runs/existing/github-comments").json()
+        feed = browser.get("/api/runs/existing/github-comments").json()
         assert feed["configured"] and feed["repository"] == "acme/api"
         # Nothing process-wide is reported: a queue depth read off the one
         # ingress describes whichever comment is in flight, rarely this one.
@@ -304,12 +304,12 @@ def test_the_route_reports_a_comment_all_the_way_to_its_reply(tmp_path) -> None:
 
         # And nowhere else: another WorkOrder's page does not carry it, and
         # there is no route that hands out every comment at once.
-        assert client.get("/api/runs/other/github-comments").json()["comments"] == []
-        assert client.get("/api/github/activity").status_code == 404
+        assert browser.get("/api/runs/other/github-comments").json()["comments"] == []
+        assert browser.get("/api/github/activity").status_code == 404
 
 
 def test_the_route_shows_an_ignored_comment_on_the_page_that_opened_the_pr(
-    tmp_path,
+    *, slack_app, client
 ) -> None:
     """A comment that forwarded nothing still reaches the right reader.
 
@@ -317,17 +317,19 @@ def test_the_route_shows_an_ignored_comment_on_the_page_that_opened_the_pr(
     to this page because the page's work order opened the pull request it was
     left on -- asked of the store once, from the run.
     """
-    from starlette.testclient import TestClient
     from test_github_concierge import _graph_runtime
     from test_github_ingress import _issue_comment, _signed as github_signed
 
     _runtime, opened = _graph_runtime()
-    app, capabilities, _ = _app(
-        tmp_path, RecordingCommunications(),
-        WorkOrdersConfig(repository="acme/api", workflow="implementation-review-v1",
-                         runner="default"),
-        _workflow_catalog(), provider=FakeACPProvider(create=True),
-        github_webhook_secret=SIGNING_SECRET, graph_runtime=opened,
+    app, capabilities, _ = slack_app(
+        RecordingCommunications(),
+        WorkOrdersConfig(
+            repository="acme/api", workflow="implementation-review-v1", runner="default"
+        ),
+        _workflow_catalog(),
+        provider=FakeACPProvider(create=True),
+        github_webhook_secret=SIGNING_SECRET,
+        graph_runtime=opened,
     )
     source_control = MagicMock()
     source_control.add_comment = AsyncMock()
@@ -339,27 +341,26 @@ def test_the_route_shows_an_ignored_comment_on_the_page_that_opened_the_pr(
     payload = _issue_comment(1, "please fix the tests")
     payload["issue"]["pull_request"] = {}
     body = json.dumps(payload).encode()
-    with TestClient(app) as client:
-        assert client.post("/api/github/events", content=body, headers=dict(
+    with client(app) as browser:
+        assert browser.post("/api/github/events", content=body, headers=dict(
             github_signed(body), **{"x-github-event": "issue_comment"})).status_code == 200
-        client.portal.call(app.state.github_ingress.drain)
+        browser.portal.call(app.state.github_ingress.drain)
 
-        (row,) = client.get("/api/runs/existing/github-comments").json()["comments"]
+        (row,) = browser.get("/api/runs/existing/github-comments").json()["comments"]
         assert row["status"] == "ignored"
         assert row["detail"] == "someone cannot write to acme/api"
         assert row["excerpt"] == "please fix the tests"
         # And only there: another work order opened a different pull request,
         # or none, so this comment is none of its business.
-        assert client.get("/api/runs/other/github-comments").json()["comments"] == []
+        assert browser.get("/api/runs/other/github-comments").json()["comments"] == []
 
 
-def test_the_route_answers_a_deployment_with_no_webhook(tmp_path) -> None:
+def test_the_route_answers_a_deployment_with_no_webhook(*, slack_app, client) -> None:
     """A repository with no webhook secret is a panel that will stay empty."""
-    from starlette.testclient import TestClient
 
-    app, _capabilities, _ = _app(tmp_path, RecordingCommunications(), WorkOrdersConfig())
-    with TestClient(app) as client:
-        feed = client.get("/api/runs/existing/github-comments").json()
+    app, _capabilities, _ = slack_app(RecordingCommunications(), WorkOrdersConfig())
+    with client(app) as browser:
+        feed = browser.get("/api/runs/existing/github-comments").json()
     assert feed == {"repository": "acme/api", "configured": False, "comments": []}
 
 
@@ -367,19 +368,23 @@ def test_the_route_answers_a_deployment_with_no_webhook(tmp_path) -> None:
 @pytest.mark.parametrize("repository_kind", ["project", "name", "path"])
 @pytest.mark.parametrize("webhook_repositories", [("acme/api", "other/web"), ("acme/api",)])
 def test_comment_panel_uses_runs_repository_before_a_pr_is_opened(
-    tmp_path, legacy_repository, repository_kind, webhook_repositories,
+    tmp_path,
+    legacy_repository,
+    repository_kind,
+    webhook_repositories,
+    *,
+    client,
+    web_app,
 ):
-    from starlette.testclient import TestClient
     from test_web_app import _session_with
 
-    from engine.apps.web.api import create_app
     from engine.domain import RunId, RunState, TaskId, WorkflowId
 
     checkout = str(tmp_path / "web")
     repository = {"project": "other/web", "name": "web", "path": checkout}[repository_kind]
     runners = {"default": MagicMock()}
     session = _session_with(runners)
-    app = create_app(
+    app = web_app(
         session, runners,
         github_repository=legacy_repository,
         github_repositories=webhook_repositories,
@@ -387,12 +392,12 @@ def test_comment_panel_uses_runs_repository_before_a_pr_is_opened(
         repos={"web": checkout},
         repository_projects={"web": "other/web"},
     )
-    with TestClient(app) as client:
-        client.portal.call(session.state_store.save, RunState(
+    with client(app) as browser:
+        browser.portal.call(session.state_store.save, RunState(
             run_id=RunId("existing"), task_id=TaskId("task"),
             workflow_id=WorkflowId("workflow"), repository=repository,
         ))
-        response = client.get("/api/runs/existing/github-comments")
+        response = browser.get("/api/runs/existing/github-comments")
     assert response.status_code == 200
     assert response.json() == {
         "repository": "other/web", "configured": "other/web" in webhook_repositories,
@@ -419,28 +424,32 @@ def test_same_comment_id_in_two_repositories_has_independent_activity():
     assert log.entry(replace(first, repository="ACME/API")) == log.entry(first)
 
 
-def test_comment_panel_reports_the_runs_repository_in_a_multi_repo_deployment(tmp_path):
-    from starlette.testclient import TestClient
+def test_comment_panel_reports_the_runs_repository_in_a_multi_repo_deployment(
+    *, slack_app, client
+):
     from test_github_concierge import _graph_runtime
     from test_github_ingress import _issue_comment, _signed as github_signed
 
     _, opened = _graph_runtime(repository="other/web")
-    app, capabilities, _ = _app(
-        tmp_path, RecordingCommunications(), WorkOrdersConfig(),
-        graph_runtime=opened, github_repositories=("acme/api", "other/web"),
-        github_webhook_secret=SIGNING_SECRET, github_comment_handler=AsyncMock(),
+    app, capabilities, _ = slack_app(
+        RecordingCommunications(),
+        WorkOrdersConfig(),
+        graph_runtime=opened,
+        github_repositories=("acme/api", "other/web"),
+        github_webhook_secret=SIGNING_SECRET,
+        github_comment_handler=AsyncMock(),
     )
     source = MagicMock(can_write_repository=AsyncMock(return_value=True))
     object.__setattr__(capabilities, "source_control", source)
     payload = _issue_comment()
     payload["repository"]["full_name"] = "other/web"
     body = json.dumps(payload).encode()
-    with TestClient(app) as client:
-        assert client.post("/api/github/events", content=body, headers=dict(
+    with client(app) as browser:
+        assert browser.post("/api/github/events", content=body, headers=dict(
             github_signed(body), **{"x-github-event": "issue_comment"},
         )).status_code == 200
-        client.portal.call(app.state.github_ingress.drain)
-        feed = client.get("/api/runs/existing/github-comments").json()
+        browser.portal.call(app.state.github_ingress.drain)
+        feed = browser.get("/api/runs/existing/github-comments").json()
     assert feed["repository"] == "other/web"
     assert feed["configured"]
     assert len(feed["comments"]) == 1

@@ -3,12 +3,8 @@
 import json
 
 import pytest
-from starlette.testclient import TestClient
 
-from engine.adapters.state_store.sqlite import SQLiteStateStore
-from engine.apps.web.api import create_app
 from engine.apps.web.loops import LoopSettings, LoopSettingsStore, parse_loop_settings
-from engine.runtime import AgentSession, Capabilities
 
 _SETTINGS = {
     "activeHours": {"start": "09:00", "end": "17:30"},
@@ -20,27 +16,15 @@ _SETTINGS = {
 }
 
 
-def _app(tmp_path, store: LoopSettingsStore):
-    stub = object()
-    capabilities = Capabilities(
-        workflow_runtime=stub,
-        source_control=stub,
-        agent_runner=stub,
-        communications=stub,
-        workspace_provider=stub,
-        state_store=SQLiteStateStore(str(tmp_path / "t.sqlite3")),
-    )
-    runners = {"codex": stub, "claude": stub}
-    session = AgentSession(capabilities, profiles={}, runners=runners)
-    return create_app(session, runners, loop_settings=store)
-
-
-def test_saved_settings_are_read_back(tmp_path) -> None:
+def test_saved_settings_are_read_back(
+    tmp_path, *, client, sqlite_store, web_app
+) -> None:
     store = LoopSettingsStore(tmp_path / "loops.json")
-    with TestClient(_app(tmp_path, store)) as client:
-        before = client.get("/api/loops/settings").json()
-        saved = client.put("/api/loops/settings", json=_SETTINGS)
-        after = client.get("/api/loops/settings").json()
+    with client(web_app(runners={"codex": object(), "claude": object()},
+                        state_store=sqlite_store(), loop_settings=store)) as browser:
+        before = browser.get("/api/loops/settings").json()
+        saved = browser.put("/api/loops/settings", json=_SETTINGS)
+        after = browser.get("/api/loops/settings").json()
 
     assert before == LoopSettings().json()
     assert saved.status_code == 200
@@ -48,28 +32,34 @@ def test_saved_settings_are_read_back(tmp_path) -> None:
     assert LoopSettingsStore(tmp_path / "loops.json").get().max_prs == 2
 
 
-def test_rejected_settings_leave_the_saved_ones(tmp_path) -> None:
+def test_rejected_settings_leave_the_saved_ones(
+    tmp_path, *, client, sqlite_store, web_app
+) -> None:
     store = LoopSettingsStore(tmp_path / "loops.json")
-    with TestClient(_app(tmp_path, store)) as client:
-        rejected = client.put(
+    with client(web_app(runners={"codex": object(), "claude": object()},
+                        state_store=sqlite_store(), loop_settings=store)) as browser:
+        rejected = browser.put(
             "/api/loops/settings", json={**_SETTINGS, "reviewRunner": "unknown"}
         )
-        after = client.get("/api/loops/settings").json()
+        after = browser.get("/api/loops/settings").json()
 
     assert rejected.status_code == 400
     assert after == LoopSettings().json()
 
 
-def test_a_spend_limit_that_is_not_a_number_is_refused(tmp_path) -> None:
+def test_a_spend_limit_that_is_not_a_number_is_refused(
+    tmp_path, *, client, sqlite_store, web_app
+) -> None:
     store = LoopSettingsStore(tmp_path / "loops.json")
     body = json.dumps({**_SETTINGS, "maxDailySpend": 0}).replace(
         '"maxDailySpend": 0', '"maxDailySpend": NaN'
     )
-    with TestClient(_app(tmp_path, store)) as client:
-        rejected = client.put(
+    with client(web_app(runners={"codex": object(), "claude": object()},
+                        state_store=sqlite_store(), loop_settings=store)) as browser:
+        rejected = browser.put(
             "/api/loops/settings", content=body, headers={"content-type": "application/json"}
         )
-        after = client.get("/api/loops/settings")
+        after = browser.get("/api/loops/settings")
 
     assert rejected.status_code == 400
     assert after.status_code == 200

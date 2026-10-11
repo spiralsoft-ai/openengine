@@ -7,7 +7,6 @@ import sqlite3
 
 import pytest
 
-from engine.adapters.state_store.sqlite import SQLiteStateStore
 from engine.domain import (
     AgentId,
     AgentInstanceId,
@@ -31,17 +30,19 @@ from engine.ports import StateStore
 CODER = AgentId("coder")
 
 
-def test_sqlite_store_satisfies_the_port() -> None:
-    store = SQLiteStateStore(":memory:")
+def test_sqlite_store_satisfies_the_port(sqlite_store) -> None:
+    store = sqlite_store(":memory:")
     try:
         assert isinstance(store, StateStore)
     finally:
         store.close()
 
 
-def test_conversation_survives_reopening_the_database(tmp_path) -> None:
+def test_conversation_survives_reopening_the_database(
+    tmp_path, *, sqlite_store
+) -> None:
     path = tmp_path / "conversations.sqlite3"
-    first = SQLiteStateStore(path)
+    first = sqlite_store(path)
     instance = asyncio.run(first.create_instance(CODER))
     call = ToolCall(call_id="call-1", name="read", arguments='{"path":"README.md"}')
     asyncio.run(
@@ -56,7 +57,7 @@ def test_conversation_survives_reopening_the_database(tmp_path) -> None:
     )
     first.close()
 
-    second = SQLiteStateStore(path)
+    second = sqlite_store(path)
     try:
         loaded = asyncio.run(second.load_instance(instance.instance_id))
         conversation = asyncio.run(second.load_conversation(instance.instance_id))
@@ -75,8 +76,8 @@ def test_conversation_survives_reopening_the_database(tmp_path) -> None:
     assert len({message.message_id for message in conversation.messages}) == 3
 
 
-def test_conversations_are_loaded_in_one_batch() -> None:
-    store = SQLiteStateStore(":memory:")
+def test_conversations_are_loaded_in_one_batch(sqlite_store) -> None:
+    store = sqlite_store(":memory:")
     first = asyncio.run(store.create_instance(CODER))
     second = asyncio.run(store.create_instance(CODER))
     asyncio.run(store.append_messages(first.instance_id, (Message.user("First"),)))
@@ -96,9 +97,11 @@ def test_conversations_are_loaded_in_one_batch() -> None:
     assert conversations[second.instance_id].messages == ()
 
 
-def test_instance_metadata_survives_reopening_the_database(tmp_path) -> None:
+def test_instance_metadata_survives_reopening_the_database(
+    tmp_path, *, sqlite_store
+) -> None:
     path = tmp_path / "conversations.sqlite3"
-    first = SQLiteStateStore(path)
+    first = sqlite_store(path)
     instance = asyncio.run(first.create_instance(CODER, runner="codex"))
     asyncio.run(
         first.update_instance_metadata(
@@ -110,7 +113,7 @@ def test_instance_metadata_survives_reopening_the_database(tmp_path) -> None:
     )
     first.close()
 
-    second = SQLiteStateStore(path)
+    second = sqlite_store(path)
     try:
         loaded = asyncio.run(second.load_instance(instance.instance_id))
     finally:
@@ -122,7 +125,9 @@ def test_instance_metadata_survives_reopening_the_database(tmp_path) -> None:
     assert loaded.runner == "claude"
 
 
-def test_existing_database_gets_default_instance_metadata(tmp_path) -> None:
+def test_existing_database_gets_default_instance_metadata(
+    tmp_path, *, sqlite_store
+) -> None:
     path = tmp_path / "conversations.sqlite3"
     connection = sqlite3.connect(path)
     connection.execute(
@@ -147,7 +152,7 @@ def test_existing_database_gets_default_instance_metadata(tmp_path) -> None:
     connection.commit()
     connection.close()
 
-    store = SQLiteStateStore(path)
+    store = sqlite_store(path)
     try:
         loaded = asyncio.run(store.load_instance("agi-old"))
     finally:
@@ -159,7 +164,9 @@ def test_existing_database_gets_default_instance_metadata(tmp_path) -> None:
     assert loaded.runner == ""
 
 
-def test_approvals_written_before_grants_existed_still_load(tmp_path) -> None:
+def test_approvals_written_before_grants_existed_still_load(
+    tmp_path, *, sqlite_store
+) -> None:
     """A database from before approvals were bounded by a worktree, or paired
     with the call they were about.
 
@@ -216,7 +223,7 @@ def test_approvals_written_before_grants_existed_still_load(tmp_path) -> None:
     connection.commit()
     connection.close()
 
-    store = SQLiteStateStore(path)
+    store = sqlite_store(path)
     try:
         loaded = asyncio.run(store.load_approval(ApprovalId("apv-old")))
         grants = asyncio.run(store.list_session_grants())
@@ -230,8 +237,8 @@ def test_approvals_written_before_grants_existed_still_load(tmp_path) -> None:
     assert grants == ()
 
 
-def test_instances_are_newest_first_and_filterable() -> None:
-    store = SQLiteStateStore(":memory:")
+def test_instances_are_newest_first_and_filterable(sqlite_store) -> None:
+    store = sqlite_store(":memory:")
     try:
         first = asyncio.run(store.create_instance(CODER))
         second = asyncio.run(store.create_instance(CODER))
@@ -243,8 +250,8 @@ def test_instances_are_newest_first_and_filterable() -> None:
         store.close()
 
 
-def test_unknown_instances_refuse_messages() -> None:
-    store = SQLiteStateStore(":memory:")
+def test_unknown_instances_refuse_messages(sqlite_store) -> None:
+    store = sqlite_store(":memory:")
     try:
         with pytest.raises(KeyError):
             asyncio.run(store.append_messages("agi-nope", (Message.user("hello"),)))
@@ -252,8 +259,8 @@ def test_unknown_instances_refuse_messages() -> None:
         store.close()
 
 
-def test_agent_runs_are_upserted() -> None:
-    store = SQLiteStateStore(":memory:")
+def test_agent_runs_are_upserted(sqlite_store) -> None:
+    store = sqlite_store(":memory:")
     try:
         instance = asyncio.run(store.create_instance(CODER))
         running = AgentRun(
@@ -286,7 +293,9 @@ def test_agent_runs_are_upserted() -> None:
     assert recorded.changed_files == ("README.md",)
 
 
-def test_a_work_order_and_its_conversations_survive_reopening(tmp_path) -> None:
+def test_a_work_order_and_its_conversations_survive_reopening(
+    tmp_path, *, sqlite_store
+) -> None:
     path = tmp_path / "runs.sqlite3"
     run_id = RunId("run-durable")
     state = RunState(
@@ -301,7 +310,7 @@ def test_a_work_order_and_its_conversations_survive_reopening(tmp_path) -> None:
         origin=RunOrigin(channel="C1", thread_id="17.5", author="U9", requester="github:1:alice", issue_repository="acme/api", issue_number=7, review_thread_id="PRRT_1", review_comment_id=41),
     )
 
-    first = SQLiteStateStore(path)
+    first = sqlite_store(path)
     asyncio.run(first.save(state))
     asyncio.run(
         first.create_instance(
@@ -312,7 +321,7 @@ def test_a_work_order_and_its_conversations_survive_reopening(tmp_path) -> None:
     )
     first.close()
 
-    second = SQLiteStateStore(path)
+    second = sqlite_store(path)
     try:
         loaded = asyncio.run(second.load(run_id))
         runs = asyncio.run(second.list_runs())
@@ -326,8 +335,10 @@ def test_a_work_order_and_its_conversations_survive_reopening(tmp_path) -> None:
     assert instances[0].conversation_id == "review-conversation"
 
 
-def test_list_runs_for_origin_returns_only_the_linked_thread(tmp_path) -> None:
-    store = SQLiteStateStore(tmp_path / "runs.sqlite3")
+def test_list_runs_for_origin_returns_only_the_linked_thread(
+    tmp_path, *, sqlite_store
+) -> None:
+    store = sqlite_store(tmp_path / "runs.sqlite3")
     linked = RunState(
         run_id=RunId("run-linked"), task_id=TaskId("task-linked"),
         workflow_id=WorkflowId("workflow"),
@@ -349,7 +360,7 @@ def test_list_runs_for_origin_returns_only_the_linked_thread(tmp_path) -> None:
 
 
 def test_a_row_this_build_cannot_read_is_skipped_rather_than_hiding_the_rest(
-    tmp_path,
+    tmp_path, *, sqlite_store
 ) -> None:
     """A run left by a build with phases this one no longer has.
 
@@ -364,7 +375,7 @@ def test_a_row_this_build_cannot_read_is_skipped_rather_than_hiding_the_rest(
         workflow_id=WorkflowId("implementation-review-rerank"),
     )
 
-    store = SQLiteStateStore(path)
+    store = sqlite_store(path)
     try:
         asyncio.run(store.save(current))
         store._connection.execute(
@@ -393,49 +404,51 @@ def test_a_row_this_build_cannot_read_is_skipped_rather_than_hiding_the_rest(
     assert runs == (current,)
 
 
-def test_workorder_parent_survives_reopening(tmp_path) -> None:
+def test_workorder_parent_survives_reopening(tmp_path, *, sqlite_store) -> None:
     path = tmp_path / "provenance.db"
     state = RunState(
         run_id=RunId("child"), task_id=TaskId("task"),
         workflow_id=WorkflowId("workflow"), parent_run_id=RunId("parent"),
     )
-    store = SQLiteStateStore(path)
+    store = sqlite_store(path)
     asyncio.run(store.save(state))
     store.close()
-    reopened = SQLiteStateStore(path)
+    reopened = sqlite_store(path)
     try:
         assert asyncio.run(reopened.load(state.run_id)).parent_run_id == RunId("parent")
     finally:
         reopened.close()
 
 
-def test_scheduled_dependency_and_inputs_survive_reopening(tmp_path) -> None:
+def test_scheduled_dependency_and_inputs_survive_reopening(
+    tmp_path, *, sqlite_store
+) -> None:
     path = tmp_path / "dependencies.sqlite3"
     state = RunState(
         run_id=RunId("dependent"), task_id=TaskId("task"),
         workflow_id=WorkflowId("workflow"), phase=RunPhase.SCHEDULED,
         depends_on_run_id=RunId("prerequisite"), inputs={"runner": "codex"},
     )
-    store = SQLiteStateStore(path)
+    store = sqlite_store(path)
     asyncio.run(store.save(state))
     store.close()
-    store = SQLiteStateStore(path)
+    store = sqlite_store(path)
     try:
         assert asyncio.run(store.load(state.run_id)) == state
     finally:
         store.close()
 
 
-def test_requester_survives_reopening(tmp_path) -> None:
+def test_requester_survives_reopening(tmp_path, *, sqlite_store) -> None:
     path = tmp_path / "requester.sqlite3"
     state = RunState(
         run_id=RunId("asked"), task_id=TaskId("task"),
         workflow_id=WorkflowId("workflow"), requester="github:42:alice",
     )
-    store = SQLiteStateStore(path)
+    store = sqlite_store(path)
     asyncio.run(store.save(state))
     store.close()
-    store = SQLiteStateStore(path)
+    store = sqlite_store(path)
     try:
         assert asyncio.run(store.load(state.run_id)) == state
         assert [run.requester for run in asyncio.run(store.list_runs())] == ["github:42:alice"]
@@ -447,17 +460,17 @@ def test_requester_survives_reopening(tmp_path) -> None:
         ]
 
 
-def test_start_time_survives_reopening(tmp_path) -> None:
+def test_start_time_survives_reopening(tmp_path, *, sqlite_store) -> None:
     path = tmp_path / "started.sqlite3"
     state = RunState(
         run_id=RunId("started"), task_id=TaskId("task"),
         workflow_id=WorkflowId("workflow"),
         started_at=datetime(2026, 10, 9, 14, 30, tzinfo=UTC),
     )
-    store = SQLiteStateStore(path)
+    store = sqlite_store(path)
     asyncio.run(store.save(state))
     store.close()
-    store = SQLiteStateStore(path)
+    store = sqlite_store(path)
     try:
         assert asyncio.run(store.load(state.run_id)) == state
     finally:

@@ -7,7 +7,6 @@ from html import escape
 
 import pytest
 from langgraph.graph import END, START, StateGraph
-from starlette.testclient import TestClient
 
 from engine.domain import RunPhase
 from engine.graph_runtime import EventKind, RunStatus
@@ -15,9 +14,9 @@ from engine.graph_runtime_langgraph import State, graph_workflow
 from engine.graph_runtime_langgraph.executions import current_execution
 from engine.graph_runtime_langgraph.workflows import sqlite_runtime
 from engine.runtime import WorkflowCatalog, WorkOrdersConfig
-from test_slack_work_orders import (
-    FakeACPProvider, RecordingCommunications, _app, _signed,
-)
+from test_slack_work_orders import _signed
+from provider_fakes import FakeACPProvider
+from web_fakes import RecordingCommunications
 
 
 @pytest.mark.parametrize("ending", ["finished", "failed"])
@@ -26,7 +25,7 @@ from test_slack_work_orders import (
 @pytest.mark.parametrize("before_row", [False, True])
 @pytest.mark.parametrize("blank_report", [False, True])
 def test_agent_transcript_is_mirrored(
-    tmp_path, origin, fail_post, before_row, ending, blank_report,
+    tmp_path, origin, fail_post, before_row, ending, blank_report, *, slack_app, client
 ):
     texts = (
         [" \n"] if blank_report
@@ -77,26 +76,27 @@ def test_agent_transcript_is_mirrored(
             return await super().post(channel, message, run_id, thread_id)
 
     communications = Communications()
-    app, capabilities, _ = _app(
-        tmp_path, communications,
+    app, capabilities, _ = slack_app(
+        communications,
         WorkOrdersConfig(repository="acme/api", workflow="mirror-test"),
-        WorkflowCatalog.from_graphs((graph,)), provider=FakeACPProvider(create=True),
+        WorkflowCatalog.from_graphs((graph,)),
+        provider=FakeACPProvider(create=True),
         graph_runtime=running(),
     )
-    with TestClient(app) as client:
+    with client(app) as browser:
         if origin == "slack":
             body = json.dumps({"type": "event_callback", "event": {
                 "type": "app_mention", "channel": "CSOURCE", "user": "UREQUESTER",
                 "ts": "2", "thread_ts": "1", "text": "<@BOT> new workorder please",
             }}).encode()
-            assert client.post("/api/slack/events", content=body, headers=_signed(body)).status_code == 200
-            client.portal.call(app.state.slack_ingress.drain)
+            assert browser.post("/api/slack/events", content=body, headers=_signed(body)).status_code == 200
+            browser.portal.call(app.state.slack_ingress.drain)
         else:
-            response = client.post("/api/runs", json={
+            response = browser.post("/api/runs", json={
                 "workflowId": "mirror-test", "prompt": "Implement it", "repository": "acme/api",
             })
             assert response.status_code < 300, response.text
-        runs = client.portal.call(capabilities.state_store.list_runs)
+        runs = browser.portal.call(capabilities.state_store.list_runs)
         assert len(runs) == 1
         run_id = runs[0].run_id
 
@@ -108,9 +108,9 @@ def test_agent_transcript_is_mirrored(
                         return state
                     await asyncio.sleep(0.01)
 
-        state = client.portal.call(finished)
+        state = browser.portal.call(finished)
         assert state.phase is (RunPhase.SUCCEEDED if ending == "finished" else RunPhase.FAILED)
-        events = client.get(f"/api/runs/{run_id}/graph-events").json()["events"]
+        events = browser.get(f"/api/runs/{run_id}/graph-events").json()["events"]
         diagnostics = [e for e in events if e["type"] == EventKind.NOTIFICATION_FAILED.value]
         assert len(diagnostics) == int(origin == "slack" and fail_post and not blank_report)
         assert "secret-token" not in str(events)
@@ -165,7 +165,9 @@ def test_agent_transcript_is_mirrored(
 
 @pytest.mark.parametrize("decision", ["accept", "cancel"])
 @pytest.mark.parametrize("agent_report", [False, True])
-def test_human_review_slack_sequence(tmp_path, decision, agent_report):
+def test_human_review_slack_sequence(
+    tmp_path, decision, agent_report, *, slack_app, client
+):
     from engine.graph_runtime_langgraph.components import HumanReviewNode
 
     class Agent:
@@ -185,20 +187,21 @@ def test_human_review_slack_sequence(tmp_path, decision, agent_report):
     graph = graph_workflow(builder, id="review-mirror-test", name="Review mirror test")
     communications = RecordingCommunications()
     provider = FakeACPProvider(create=True, text="Created the work order.")
-    app, capabilities, _ = _app(
-        tmp_path, communications,
+    app, capabilities, _ = slack_app(
+        communications,
         WorkOrdersConfig(repository="acme/api", workflow=graph.graph_id),
-        WorkflowCatalog.from_graphs((graph,)), provider=provider,
+        WorkflowCatalog.from_graphs((graph,)),
+        provider=provider,
         graph_runtime=sqlite_runtime((graph,), tmp_path / "graph"),
     )
-    with TestClient(app) as client:
+    with client(app) as browser:
         body = json.dumps({"type": "event_callback", "event": {
             "type": "app_mention", "channel": "CSOURCE", "user": "UREQUESTER",
             "ts": "2", "thread_ts": "1", "text": "<@BOT> new workorder please",
         }}).encode()
-        assert client.post("/api/slack/events", content=body, headers=_signed(body)).status_code == 200
-        client.portal.call(app.state.slack_ingress.drain)
-        runs = client.portal.call(capabilities.state_store.list_runs)
+        assert browser.post("/api/slack/events", content=body, headers=_signed(body)).status_code == 200
+        browser.portal.call(app.state.slack_ingress.drain)
+        runs = browser.portal.call(capabilities.state_store.list_runs)
         assert len(runs) == 1
         run_id = runs[0].run_id
 
@@ -213,16 +216,16 @@ def test_human_review_slack_sequence(tmp_path, decision, agent_report):
                               for _, m, _ in communications.posts):
                     await asyncio.sleep(0.01)
 
-        client.portal.call(wait_for_review)
-        events = client.get(f"/api/runs/{run_id}/graph-events").json()["events"]
+        browser.portal.call(wait_for_review)
+        events = browser.get(f"/api/runs/{run_id}/graph-events").json()["events"]
         approval = next(e for e in events if e["type"] == "approval.requested")
-        response = client.post(
+        response = browser.post(
             f"/graph/api/runs/{run_id}/approvals/{approval['payload']['approvalId']}",
             json={"decision": decision},
         )
         assert response.status_code < 300, response.text
-        client.portal.call(wait_for_phase, RunPhase.SUCCEEDED if decision == "accept" else RunPhase.FAILED)
-        events = client.get(f"/api/runs/{run_id}/graph-events").json()["events"]
+        browser.portal.call(wait_for_phase, RunPhase.SUCCEEDED if decision == "accept" else RunPhase.FAILED)
+        events = browser.get(f"/api/runs/{run_id}/graph-events").json()["events"]
         # Internal narration remains available in OE but cannot count as a report.
         transcripts = [e["payload"]["text"] for e in events if e["type"] == "transcript"]
         assert HumanReviewNode().prompt in transcripts

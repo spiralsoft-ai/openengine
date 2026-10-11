@@ -799,11 +799,13 @@ def test_the_http_surface_reports_validation_problems_and_conflicts(tmp_path: Pa
 # --- through the daemon -------------------------------------------------------
 
 
-def test_the_daemon_serves_the_graph_api_and_lists_its_runs_as_work_orders(tmp_path: Path) -> None:
+def test_the_daemon_serves_the_graph_api_and_lists_its_runs_as_work_orders(
+    tmp_path: Path, *, workflow_app
+) -> None:
     """`engine-web` mounts the service at /api/v1 and starts runs as WorkOrders."""
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
     from engine.adapters.state_store.memory import InMemoryStateStore
-    from test_web_app import ConcurrentRunner, _workflow_app
+    from web_fakes import ConcurrentRunner
 
     async def scenario() -> None:
         registry = agent_registry([
@@ -827,7 +829,7 @@ def test_the_daemon_serves_the_graph_api_and_lists_its_runs_as_work_orders(tmp_p
                     registry=registry, start=start, default_repository="example/repo",
                 )
 
-            app = _workflow_app(
+            app = workflow_app(
                 InMemoryStateStore(), ConcurrentRunner(), graph_runtime=running(), graph_service=factory,
             )
             transport = httpx.ASGITransport(app=app)

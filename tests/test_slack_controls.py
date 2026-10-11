@@ -3,15 +3,14 @@ import json
 from dataclasses import replace
 
 import pytest
-from starlette.testclient import TestClient
 
 from engine.domain import ApprovalDecision, ApprovalKind, RunId, RunOrigin, RunState, TaskId, WorkflowId
 from engine.graph_runtime import RunStatus
 from engine.runtime import WorkOrdersConfig
 from test_github_concierge import _graph_runtime, _human_review
-from test_slack_work_orders import (
-    FakeACPProvider, RecordingCommunications, _app, _signed, _workflow_catalog, call_mcp,
-)
+from test_slack_work_orders import _signed, _workflow_catalog
+from provider_fakes import FakeACPProvider, call_mcp
+from web_fakes import RecordingCommunications
 
 
 class ControlProvider(FakeACPProvider):
@@ -60,17 +59,21 @@ def saved_run(run_id="existing", author="U"):
      {"approval_id": "approval-1", "answers": {"reply": ["Public API"]}}),
 ])
 @pytest.mark.parametrize("author", ["U", "OPERATOR", "STRANGER"])
-def test_slack_controls_graph_workorder(tmp_path, action, status, pending, arguments, author):
+def test_slack_controls_graph_workorder(
+    action, status, pending, arguments, author, *, slack_app, client
+):
     runtime, opened = _graph_runtime(status=status, pending_approvals=pending)
     provider = ControlProvider(action, arguments)
-    app, capabilities, _ = _app(
-        tmp_path, RecordingCommunications(),
-        WorkOrdersConfig(slack_operators=("OPERATOR",)), _workflow_catalog(),
-        provider=provider, graph_runtime=opened,
+    app, capabilities, _ = slack_app(
+        RecordingCommunications(),
+        WorkOrdersConfig(slack_operators=("OPERATOR",)),
+        _workflow_catalog(),
+        provider=provider,
+        graph_runtime=opened,
     )
-    with TestClient(app) as client:
-        client.portal.call(capabilities.state_store.save, saved_run())
-        send(client, app, "Please handle this", author)
+    with client(app) as browser:
+        browser.portal.call(capabilities.state_store.save, saved_run())
+        send(browser, app, "Please handle this", author)
         result = provider.clients[0].result
         if author == "STRANGER":
             assert result["isError"]
@@ -93,52 +96,62 @@ def test_slack_controls_graph_workorder(tmp_path, action, status, pending, argum
                 assert "requested changes" in runtime.steer.await_args.args[1]
                 assert arguments["summary"] in runtime.steer.await_args.args[1]
                 assert "implementation resumed" in result["content"][0]["text"]
-            assert len(client.portal.call(capabilities.state_store.list_runs)) == 1
+            assert len(browser.portal.call(capabilities.state_store.list_runs)) == 1
         runtime.start.assert_not_awaited()
 
 
 @pytest.mark.parametrize("action", ["steer_workorder", "resume_workorder"])
-def test_pending_question_cannot_be_bypassed(tmp_path, action):
+def test_pending_question_cannot_be_bypassed(action, *, slack_app, client):
     runtime, opened = _graph_runtime(pending_approvals=(_human_review(tool_name="question"),))
     provider = ControlProvider(action, {"prompt": "Do it"})
-    app, capabilities, _ = _app(tmp_path, RecordingCommunications(), WorkOrdersConfig(),
-                               _workflow_catalog(), provider=provider, graph_runtime=opened)
-    with TestClient(app) as client:
-        client.portal.call(capabilities.state_store.save, saved_run())
-        send(client, app, "Do it")
+    app, capabilities, _ = slack_app(
+        RecordingCommunications(),
+        WorkOrdersConfig(),
+        _workflow_catalog(),
+        provider=provider,
+        graph_runtime=opened,
+    )
+    with client(app) as browser:
+        browser.portal.call(capabilities.state_store.save, saved_run())
+        send(browser, app, "Do it")
         assert provider.clients[0].result["isError"]
         runtime.steer.assert_not_awaited()
         runtime.decide.assert_not_awaited()
 
 
-def test_multiple_workorders_are_selected_in_slack_per_sender(tmp_path):
+def test_multiple_workorders_are_selected_in_slack_per_sender(*, slack_app, client):
     runtime, opened = _graph_runtime()
     provider = ControlProvider("steer_workorder", {"prompt": "Fix it"})
     communications = RecordingCommunications()
-    app, capabilities, _ = _app(tmp_path, communications, WorkOrdersConfig(),
-                               _workflow_catalog(), provider=provider, graph_runtime=opened)
-    with TestClient(app) as client:
+    app, capabilities, _ = slack_app(
+        communications,
+        WorkOrdersConfig(),
+        _workflow_catalog(),
+        provider=provider,
+        graph_runtime=opened,
+    )
+    with client(app) as browser:
         for run in (
             replace(saved_run("first"), name='Ask <@U123> & keep "quotes"'),
             replace(saved_run("second"), prompt="Fix <!channel> & <@U456>"),
         ):
-            client.portal.call(capabilities.state_store.save, run)
-        send(client, app, "Fix it")
+            browser.portal.call(capabilities.state_store.save, run)
+        send(browser, app, "Fix it")
         assert not provider.clients
         assert "Which WorkOrder" in communications.posts[-1][1].text
         assert '`first` (Ask &lt;@U123&gt; &amp; keep "quotes")' in communications.posts[-1][1].text
         assert "`second` (Fix &lt;!channel&gt; &amp; &lt;@U456&gt;)" in communications.posts[-1][1].text
-        send(client, app, "second", ts="3")
+        send(browser, app, "second", ts="3")
         assert "Selected WorkOrder" in communications.posts[-1][1].text
-        send(client, app, "Fix it", ts="4")
+        send(browser, app, "Fix it", ts="4")
         assert runtime.steer.await_args.args[0] == "second"
-        send(client, app, "Fix it", author="STRANGER", ts="5")
+        send(browser, app, "Fix it", author="STRANGER", ts="5")
         assert "Which WorkOrder" in communications.posts[-1][1].text
         assert runtime.steer.await_count == 1
 
 
 @pytest.mark.parametrize("ending", ["completed", "failed", "cancelled", "review"])
-def test_followup_reenters_same_real_graph(tmp_path, ending):
+def test_followup_reenters_same_real_graph(tmp_path, ending, *, slack_app, client):
     import asyncio
     from contextlib import asynccontextmanager
     from engine.graph_runtime import GraphId
@@ -190,12 +203,16 @@ def test_followup_reenters_same_real_graph(tmp_path, ending):
         {"approved": False, "summary": "Fix the broken login"} if ending == "review"
         else {"prompt": "Fix the broken login"},
     )
-    app, capabilities, _ = _app(tmp_path, RecordingCommunications(), WorkOrdersConfig(),
-                               WorkflowCatalog.from_graphs((graph,)), provider=provider,
-                               graph_runtime=opened())
-    with TestClient(app) as client:
+    app, capabilities, _ = slack_app(
+        RecordingCommunications(),
+        WorkOrdersConfig(),
+        WorkflowCatalog.from_graphs((graph,)),
+        provider=provider,
+        graph_runtime=opened(),
+    )
+    with client(app) as browser:
         runtime = runtimes[0]
-        client.portal.call(capabilities.state_store.save, saved_run())
+        browser.portal.call(capabilities.state_store.save, saved_run())
 
         async def start():
             await runtime.start(GraphId("implementation-review-v1"), {}, run_id=RunId("existing"))
@@ -207,12 +224,12 @@ def test_followup_reenters_same_real_graph(tmp_path, ending):
             await settle(runtime, lambda s: bool(s.pending_approvals) if ending == "review"
                          else s.status in (RunStatus.COMPLETED, RunStatus.FAILED))
 
-        client.portal.call(start)
-        send(client, app, "Fix the broken login")
+        browser.portal.call(start)
+        send(browser, app, "Fix the broken login")
         assert not provider.clients[0].result.get("isError"), provider.clients[0].result
-        client.portal.call(settle, runtime, lambda s: len(received) == 2)
+        browser.portal.call(settle, runtime, lambda s: len(received) == 2)
         assert "Fix the broken login" in received[1][0]
-        assert len(client.portal.call(capabilities.state_store.list_runs)) == 1
+        assert len(browser.portal.call(capabilities.state_store.list_runs)) == 1
 
 
 @pytest.mark.parametrize("pending,approval_id", [
@@ -220,16 +237,23 @@ def test_followup_reenters_same_real_graph(tmp_path, ending):
     ((_human_review(),), "approval-1"),
     ((replace(_human_review(tool_name="bash"), kind=ApprovalKind.COMMAND_EXECUTION),), "approval-1"),
 ])
-def test_answers_cannot_approve_reviews_permissions_or_stale_questions(tmp_path, pending, approval_id):
+def test_answers_cannot_approve_reviews_permissions_or_stale_questions(
+    pending, approval_id, *, slack_app, client
+):
     runtime, opened = _graph_runtime(pending_approvals=pending)
     provider = ControlProvider("answer_workorder_question", {
         "approval_id": approval_id, "answers": {"reply": ["yes"]},
     })
-    app, capabilities, _ = _app(tmp_path, RecordingCommunications(), WorkOrdersConfig(),
-                               _workflow_catalog(), provider=provider, graph_runtime=opened)
-    with TestClient(app) as client:
-        client.portal.call(capabilities.state_store.save, saved_run())
-        send(client, app, "yes")
+    app, capabilities, _ = slack_app(
+        RecordingCommunications(),
+        WorkOrdersConfig(),
+        _workflow_catalog(),
+        provider=provider,
+        graph_runtime=opened,
+    )
+    with client(app) as browser:
+        browser.portal.call(capabilities.state_store.save, saved_run())
+        send(browser, app, "yes")
         assert provider.clients[0].result["isError"]
         runtime.steer.assert_not_awaited()
         runtime.decide.assert_not_awaited()

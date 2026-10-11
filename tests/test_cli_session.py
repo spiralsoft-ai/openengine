@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -40,10 +39,9 @@ class Daemon:
 
 
 @pytest.fixture
-def repository(tmp_path, monkeypatch) -> Path:
+def repository(tmp_path, monkeypatch, *, git_repo) -> Path:
     root = tmp_path / "repo"
-    root.mkdir()
-    subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
+    git_repo(root)
     monkeypatch.setenv(backends.FILE_ENVIRONMENT_VARIABLE, str(tmp_path / "backends.json"))
     monkeypatch.delenv(backends.SELECTED_ENVIRONMENT_VARIABLE, raising=False)
     monkeypatch.setattr(session.shutil, "which", lambda name: f"/bin/{name}")

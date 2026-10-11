@@ -257,7 +257,7 @@ async def _subscribe(
 
 
 @asynccontextmanager
-async def _server(runtime: GraphRuntime) -> AsyncIterator[_Surface]:
+async def _server(runtime: GraphRuntime, *, async_client) -> AsyncIterator[_Surface]:
     """A running control server, entered and left the way a real one is.
 
     Through the app's own lifespan rather than by calling `runtime.aclose()`
@@ -267,9 +267,7 @@ async def _server(runtime: GraphRuntime) -> AsyncIterator[_Surface]:
     """
     app = create_app(runtime)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with async_client(app, base_url="http://test") as client:
             yield _Surface(app, client)
 
 
@@ -322,9 +320,11 @@ def test_every_backend_satisfies_the_runtime_contract(build: Backend) -> None:
 # --- topology --------------------------------------------------------------
 
 
-def test_topology_describes_every_node_and_edge(build: Backend) -> None:
+def test_topology_describes_every_node_and_edge(
+    build: Backend, *, async_client
+) -> None:
     async def scenario() -> tuple[httpx.Response, httpx.Response, httpx.Response]:
-        async with _server(build(_pipeline(Say("Done.")))) as surface:
+        async with _server(build(_pipeline(Say("Done."))), async_client=async_client) as surface:
             return (
                 await surface.client.get("/api/graphs"),
                 await surface.client.get(f"/api/graphs/{GRAPH}"),
@@ -377,7 +377,9 @@ def test_topology_describes_every_node_and_edge(build: Backend) -> None:
     assert missing.json() == {"error": "graph not found"}
 
 
-def test_topology_describes_a_fan_out_as_several_edges_out_of_one_node(build: Backend) -> None:
+def test_topology_describes_a_fan_out_as_several_edges_out_of_one_node(
+    build: Backend, *, async_client
+) -> None:
     """Three edges out of implementation, and three back into the reranker.
 
     Spelled out rather than derived from `REVIEWERS`, because a test that built
@@ -388,7 +390,7 @@ def test_topology_describes_a_fan_out_as_several_edges_out_of_one_node(build: Ba
     """
 
     async def scenario() -> dict:
-        async with _server(build(_fan_out(Say("Fine.")))) as surface:
+        async with _server(build(_fan_out(Say("Fine."))), async_client=async_client) as surface:
             described = await surface.client.get(f"/api/graphs/{POOL}")
             return described.json()
 
@@ -407,9 +409,11 @@ def test_topology_describes_a_fan_out_as_several_edges_out_of_one_node(build: Ba
 # --- starting runs and reading their state ---------------------------------
 
 
-def test_starting_a_run_reports_the_frontier_it_begins_at(build: Backend) -> None:
+def test_starting_a_run_reports_the_frontier_it_begins_at(
+    build: Backend, *, async_client
+) -> None:
     async def scenario() -> dict:
-        async with _server(build(_pipeline(Say("Done.")))) as surface:
+        async with _server(build(_pipeline(Say("Done."))), async_client=async_client) as surface:
             return await _start(surface, values={"repository": "acme/api"})
 
     run = asyncio.run(scenario())
@@ -425,9 +429,11 @@ def test_starting_a_run_reports_the_frontier_it_begins_at(build: Backend) -> Non
     assert run["pendingApprovals"] == []
 
 
-def test_starting_a_graph_nobody_registered_is_refused(build: Backend) -> None:
+def test_starting_a_graph_nobody_registered_is_refused(
+    build: Backend, *, async_client
+) -> None:
     async def scenario() -> httpx.Response:
-        async with _server(build(_pipeline(Say("Done.")))) as surface:
+        async with _server(build(_pipeline(Say("Done."))), async_client=async_client) as surface:
             return await surface.client.post(
                 "/api/runs", json={"graphId": "nonexistent"}
             )
@@ -438,14 +444,16 @@ def test_starting_a_graph_nobody_registered_is_refused(build: Backend) -> None:
     assert refused.json() == {"error": "unknown graph: nonexistent"}
 
 
-def test_current_state_names_what_a_paused_run_is_waiting_in(build: Backend) -> None:
+def test_current_state_names_what_a_paused_run_is_waiting_in(
+    build: Backend, *, async_client
+) -> None:
     """The pause is the case reading state exists for: nothing else will move."""
     graph = _pipeline(
         Say("Ready to run the tests."), Ask("run the tests", command="pytest")
     )
 
     async def scenario() -> dict:
-        async with _server(build(graph)) as surface:
+        async with _server(build(graph), async_client=async_client) as surface:
             run = await _start(surface)
             await surface.read(str(run["runId"]), "approval.requested")
             paused = await surface.client.get(f"/api/runs/{run['runId']}")
@@ -475,9 +483,9 @@ def test_current_state_names_what_a_paused_run_is_waiting_in(build: Backend) -> 
     assert approval["allowedDecisions"] == ["accept", "cancel"]
 
 
-def test_a_run_nobody_started_is_not_found(build: Backend) -> None:
+def test_a_run_nobody_started_is_not_found(build: Backend, *, async_client) -> None:
     async def scenario() -> tuple[httpx.Response, httpx.Response, httpx.Response]:
-        async with _server(build(_pipeline(Say("Done.")))) as surface:
+        async with _server(build(_pipeline(Say("Done."))), async_client=async_client) as surface:
             return (
                 await surface.client.get("/api/runs/run-404"),
                 await surface.client.get("/api/runs/run-404/events"),
@@ -496,7 +504,9 @@ def test_a_run_nobody_started_is_not_found(build: Backend) -> None:
 # --- supersteps ------------------------------------------------------------
 
 
-def test_a_fan_out_reports_every_node_of_the_superstep_at_once(build: Backend) -> None:
+def test_a_fan_out_reports_every_node_of_the_superstep_at_once(
+    build: Backend, *, async_client
+) -> None:
     """The reason `active_executions` is plural.
 
     Three reviewers are one superstep, not three, and there is no truthful value
@@ -505,7 +515,7 @@ def test_a_fan_out_reports_every_node_of_the_superstep_at_once(build: Backend) -
     graph = _fan_out(Say("Reviewing."), AwaitSteering(), Say("Approved."))
 
     async def scenario() -> tuple[dict, list[dict]]:
-        async with _server(build(graph)) as surface:
+        async with _server(build(graph), async_client=async_client) as surface:
             run = await _start(surface, POOL)
             run_id = str(run["runId"])
             # Four transcripts: the implementation's, then one per reviewer, so
@@ -531,7 +541,9 @@ def test_a_fan_out_reports_every_node_of_the_superstep_at_once(build: Backend) -
 # --- steering: routed to the execution, not through the graph ---------------
 
 
-def test_steering_reaches_the_execution_without_restarting_the_node(build: Backend) -> None:
+def test_steering_reaches_the_execution_without_restarting_the_node(
+    build: Backend, *, async_client
+) -> None:
     """The whole requirement: a message to something already running.
 
     What must be true afterwards is that `implementation` was entered exactly
@@ -543,7 +555,7 @@ def test_steering_reaches_the_execution_without_restarting_the_node(build: Backe
     runtime = build(graph)
 
     async def scenario() -> tuple[dict, httpx.Response, list[dict], dict]:
-        async with _server(runtime) as surface:
+        async with _server(runtime, async_client=async_client) as surface:
             run = await _start(surface)
             run_id = str(run["runId"])
             await surface.read(run_id, "transcript")
@@ -585,7 +597,9 @@ def test_steering_reaches_the_execution_without_restarting_the_node(build: Backe
     assert final["values"]["steering"] == ["Rename the flag."]
 
 
-def test_an_execution_waiting_on_an_approval_can_still_be_steered(build: Backend) -> None:
+def test_an_execution_waiting_on_an_approval_can_still_be_steered(
+    build: Backend, *, async_client
+) -> None:
     """The lifecycle this package exists to get right.
 
     An agent that has asked to run a command is not suspended: its session is
@@ -602,7 +616,7 @@ def test_an_execution_waiting_on_an_approval_can_still_be_steered(build: Backend
     runtime = build(graph)
 
     async def scenario() -> dict[str, object]:
-        async with _server(runtime) as surface:
+        async with _server(runtime, async_client=async_client) as surface:
             run = await _start(surface)
             run_id = str(run["runId"])
             asked = await surface.read(run_id, "approval.requested")
@@ -651,13 +665,15 @@ def test_an_execution_waiting_on_an_approval_can_still_be_steered(build: Backend
     assert _of_kind(events, "approval.resolved")[0]["payload"]["decision"] == "accept"
 
 
-def test_steering_a_fan_out_has_to_name_which_execution_it_is_for(build: Backend) -> None:
+def test_steering_a_fan_out_has_to_name_which_execution_it_is_for(
+    build: Backend, *, async_client
+) -> None:
     """Three agents running is three answers to "steer this run"."""
     graph = _fan_out(Say("Reviewing."), AwaitSteering(), Say("Approved."))
     runtime = build(graph)
 
     async def scenario() -> dict[str, object]:
-        async with _server(runtime) as surface:
+        async with _server(runtime, async_client=async_client) as surface:
             run = await _start(surface, POOL)
             run_id = str(run["runId"])
             await surface.read(run_id, "transcript", 4)
@@ -722,7 +738,9 @@ def test_steering_a_fan_out_has_to_name_which_execution_it_is_for(build: Backend
     ]
 
 
-def test_several_tasks_of_one_node_are_several_executions(build: Backend) -> None:
+def test_several_tasks_of_one_node_are_several_executions(
+    build: Backend, *, async_client
+) -> None:
     """The reason an execution has an id of its own.
 
     LangGraph's `Send` fans several tasks into one node, so `review` can be
@@ -733,7 +751,7 @@ def test_several_tasks_of_one_node_are_several_executions(build: Backend) -> Non
     runtime = build(_repeated(Say("Reviewing."), AwaitSteering()))
 
     async def scenario() -> dict[str, object]:
-        async with _server(runtime) as surface:
+        async with _server(runtime, async_client=async_client) as surface:
             run = await _start(surface, REPEATED)
             run_id = str(run["runId"])
             events = await surface.read(run_id, "transcript", 4)
@@ -761,14 +779,16 @@ def test_several_tasks_of_one_node_are_several_executions(build: Backend) -> Non
     )
 
 
-def test_steering_one_task_of_a_node_reaches_only_that_task(build: Backend) -> None:
+def test_steering_one_task_of_a_node_reaches_only_that_task(
+    build: Backend, *, async_client
+) -> None:
     """The node name is ambiguous here, and the id is not."""
     runtime = build(
         _repeated(Say("Reviewing."), AwaitSteering(), Say("Done."))
     )
 
     async def scenario() -> dict[str, object]:
-        async with _server(runtime) as surface:
+        async with _server(runtime, async_client=async_client) as surface:
             run = await _start(surface, REPEATED)
             run_id = str(run["runId"])
             await surface.read(run_id, "transcript", 4)
@@ -824,14 +844,16 @@ def test_steering_one_task_of_a_node_reaches_only_that_task(build: Backend) -> N
     ]
 
 
-def test_an_approval_goes_back_to_the_task_that_raised_it(build: Backend) -> None:
+def test_an_approval_goes_back_to_the_task_that_raised_it(
+    build: Backend, *, async_client
+) -> None:
     """Routing by node would release whichever of three the dictionary kept."""
     runtime = build(
         _repeated(Ask("run the tests", command="pytest"), Say("Done."))
     )
 
     async def scenario() -> dict[str, object]:
-        async with _server(runtime) as surface:
+        async with _server(runtime, async_client=async_client) as surface:
             run = await _start(surface, REPEATED)
             run_id = str(run["runId"])
             asked = await surface.read(run_id, "approval.requested", 3)
@@ -873,9 +895,11 @@ def test_an_approval_goes_back_to_the_task_that_raised_it(build: Backend) -> Non
     assert runtime.entered(REVIEW) == 3
 
 
-def test_steering_a_run_with_nothing_in_flight_is_refused(build: Backend) -> None:
+def test_steering_a_run_with_nothing_in_flight_is_refused(
+    build: Backend, *, async_client
+) -> None:
     async def scenario() -> tuple[httpx.Response, httpx.Response, httpx.Response]:
-        async with _server(build(_pipeline(Say("Done.")))) as surface:
+        async with _server(build(_pipeline(Say("Done."))), async_client=async_client) as surface:
             run = await _start(surface)
             run_id = str(run["runId"])
             await surface.read(run_id, "run.finished")
@@ -900,7 +924,9 @@ def test_steering_a_run_with_nothing_in_flight_is_refused(build: Backend) -> Non
     assert unknown.status_code == 404
 
 
-def test_steering_an_always_open_node_resets_the_graph(build: Backend) -> None:
+def test_steering_an_always_open_node_resets_the_graph(
+    build: Backend, *, async_client
+) -> None:
     """Steering to a node marked always_open after the graph has moved past it
     resumes the graph at that node and delivers the message.
 
@@ -924,7 +950,7 @@ def test_steering_an_always_open_node_resets_the_graph(build: Backend) -> None:
     )
 
     async def scenario() -> dict[str, object]:
-        async with _server(build(graph)) as surface:
+        async with _server(build(graph), async_client=async_client) as surface:
             run = await _start(surface)
             run_id = str(run["runId"])
             # Wait for implementation to start and steer it the first time.
@@ -958,12 +984,12 @@ def test_steering_an_always_open_node_resets_the_graph(build: Backend) -> None:
 
 
 def test_steering_a_non_always_open_node_with_nothing_in_flight_is_still_refused(
-    build: Backend,
+    build: Backend, *, async_client
 ) -> None:
     """A node that is *not* always_open still refuses steering after completion."""
 
     async def scenario() -> httpx.Response:
-        async with _server(build(_pipeline(Say("Done.")))) as surface:
+        async with _server(build(_pipeline(Say("Done."))), async_client=async_client) as surface:
             run = await _start(surface)
             run_id = str(run["runId"])
             await surface.read(run_id, "run.finished")
@@ -1000,11 +1026,13 @@ def test_a_controllable_execution_is_all_the_runtime_asks_of_a_node() -> None:
 # --- approvals -------------------------------------------------------------
 
 
-def test_an_approval_is_published_answered_and_answered_only_once(build: Backend) -> None:
+def test_an_approval_is_published_answered_and_answered_only_once(
+    build: Backend, *, async_client
+) -> None:
     graph = _pipeline(Ask("run the tests", command="pytest", tool_name="shell"))
 
     async def scenario() -> dict[str, object]:
-        async with _server(build(graph)) as surface:
+        async with _server(build(graph), async_client=async_client) as surface:
             run = await _start(surface)
             run_id = str(run["runId"])
             asked = await surface.read(run_id, "approval.requested")
@@ -1053,11 +1081,13 @@ def test_an_approval_is_published_answered_and_answered_only_once(build: Backend
     assert answered["again"].status_code == 409
 
 
-def test_cancelling_an_approval_fails_the_run_where_it_asked(build: Backend) -> None:
+def test_cancelling_an_approval_fails_the_run_where_it_asked(
+    build: Backend, *, async_client
+) -> None:
     graph = _pipeline(Ask("delete the branch", command="git branch -D main"))
 
     async def scenario() -> tuple[list[dict], dict, dict]:
-        async with _server(build(graph)) as surface:
+        async with _server(build(graph), async_client=async_client) as surface:
             run = await _start(surface)
             run_id = str(run["runId"])
             asked = await surface.read(run_id, "approval.requested")
@@ -1090,7 +1120,9 @@ def test_cancelling_an_approval_fails_the_run_where_it_asked(build: Backend) -> 
     assert _of_kind(events, "run.failed")[0]["nodeId"] == str(IMPLEMENTATION)
 
 
-def test_refusing_one_task_ends_the_run_and_takes_its_siblings_with_it(build: Backend) -> None:
+def test_refusing_one_task_ends_the_run_and_takes_its_siblings_with_it(
+    build: Backend, *, async_client
+) -> None:
     """A refusal is terminal, so it has to actually terminate the run.
 
     Three tasks of one node each stop to ask permission. Refusing one of them
@@ -1106,7 +1138,7 @@ def test_refusing_one_task_ends_the_run_and_takes_its_siblings_with_it(build: Ba
     )
 
     async def scenario() -> dict[str, object]:
-        async with _server(runtime) as surface:
+        async with _server(runtime, async_client=async_client) as surface:
             run = await _start(surface, REPEATED)
             run_id = str(run["runId"])
             await surface.read(run_id, "approval.requested", 3)
@@ -1168,7 +1200,9 @@ def test_refusing_one_task_ends_the_run_and_takes_its_siblings_with_it(build: Ba
 # --- a node that raises ----------------------------------------------------
 
 
-def test_a_node_that_raises_fails_the_run_where_it_raised(build: Backend) -> None:
+def test_a_node_that_raises_fails_the_run_where_it_raised(
+    build: Backend, *, async_client
+) -> None:
     """The failure path, which is ordinary rather than exceptional.
 
     A run whose task died silently would report `running` forever, hold every
@@ -1178,7 +1212,7 @@ def test_a_node_that_raises_fails_the_run_where_it_raised(build: Backend) -> Non
     graph = _pipeline(Say("Running the tests."), Fail("codex is out of quota"))
 
     async def scenario() -> tuple[list[dict], dict, httpx.Response]:
-        async with _server(build(graph)) as surface:
+        async with _server(build(graph), async_client=async_client) as surface:
             run = await _start(surface)
             run_id = str(run["runId"])
             events = await surface.read(run_id, "run.failed")
@@ -1210,7 +1244,9 @@ def test_a_node_that_raises_fails_the_run_where_it_raised(build: Backend) -> Non
 # the primitive is called directly here, the way `running()` is.
 
 
-def test_cancelling_a_run_stops_it_and_says_it_is_over(build: Backend) -> None:
+def test_cancelling_a_run_stops_it_and_says_it_is_over(
+    build: Backend, *, async_client
+) -> None:
     """Nothing left driving the run, and the run says so.
 
     Both halves matter. Stopping without recording an ending would leave the
@@ -1221,7 +1257,7 @@ def test_cancelling_a_run_stops_it_and_says_it_is_over(build: Backend) -> None:
     runtime = build(_pipeline(Say("Reading."), AwaitSteering()))
 
     async def scenario() -> tuple[dict, list[str], RunSnapshot]:
-        async with _server(runtime) as surface:
+        async with _server(runtime, async_client=async_client) as surface:
             run = await _start(surface)
             run_id = str(run["runId"])
             await surface.read(run_id, "transcript")
@@ -1240,7 +1276,7 @@ def test_cancelling_a_run_stops_it_and_says_it_is_over(build: Backend) -> None:
 
 
 def test_cancelling_a_run_parked_on_a_question_settles_it_undecided(
-    build: Backend,
+    build: Backend, *, async_client
 ) -> None:
     """The state a WorkOrder mostly sits in, so it is the one worth stopping.
 
@@ -1261,7 +1297,7 @@ def test_cancelling_a_run_parked_on_a_question_settles_it_undecided(
     )
 
     async def scenario() -> dict[str, object]:
-        async with _server(runtime) as surface:
+        async with _server(runtime, async_client=async_client) as surface:
             run = await _start(surface, REPEATED)
             run_id = str(run["runId"])
             async with surface.subscribe(run_id) as feed:
@@ -1306,7 +1342,7 @@ def test_cancelling_a_run_parked_on_a_question_settles_it_undecided(
 
 
 def test_cancelling_a_finished_run_leaves_what_it_said_about_itself(
-    build: Backend,
+    build: Backend, *, async_client
 ) -> None:
     """A run that already ended is not re-ended.
 
@@ -1317,7 +1353,7 @@ def test_cancelling_a_finished_run_leaves_what_it_said_about_itself(
     runtime = build(_pipeline(Say("Wrote it.")))
 
     async def scenario() -> dict:
-        async with _server(runtime) as surface:
+        async with _server(runtime, async_client=async_client) as surface:
             run = await _start(surface)
             run_id = str(run["runId"])
             await surface.read(run_id, "run.finished")
@@ -1331,12 +1367,14 @@ def test_cancelling_a_finished_run_leaves_what_it_said_about_itself(
     assert state["error"] == ""
 
 
-def test_cancelling_a_run_nobody_started_is_refused(build: Backend) -> None:
+def test_cancelling_a_run_nobody_started_is_refused(
+    build: Backend, *, async_client
+) -> None:
     """`UnknownRunError`, so a caller can tell it from a run it did stop."""
     runtime = build(_pipeline(Say("Wrote it.")))
 
     async def scenario() -> None:
-        async with _server(runtime):
+        async with _server(runtime, async_client=async_client):
             with pytest.raises(UnknownRunError):
                 await runtime.cancel(RunId("run-nobody-started"))
 
@@ -1346,7 +1384,9 @@ def test_cancelling_a_run_nobody_started_is_refused(build: Backend) -> None:
 # --- shutdown --------------------------------------------------------------
 
 
-def test_shutting_the_server_down_stops_the_runs_it_was_driving(build: Backend) -> None:
+def test_shutting_the_server_down_stops_the_runs_it_was_driving(
+    build: Backend, *, async_client
+) -> None:
     """Runs outlive the request that started them, so nothing else would.
 
     Without this a SIGTERM drops whatever node was mid-execution, with no
@@ -1355,7 +1395,7 @@ def test_shutting_the_server_down_stops_the_runs_it_was_driving(build: Backend) 
     runtime = build(_pipeline(Say("Reading."), AwaitSteering()))
 
     async def scenario() -> list[str]:
-        async with _server(runtime) as surface:
+        async with _server(runtime, async_client=async_client) as surface:
             run = await _start(surface)
             await surface.read(str(run["runId"]), "transcript")
         return [str(run_id) for run_id in runtime.running()]
@@ -1366,10 +1406,12 @@ def test_shutting_the_server_down_stops_the_runs_it_was_driving(build: Backend) 
 # --- checkpoints and resumption --------------------------------------------
 
 
-def test_a_run_saves_a_checkpoint_at_every_superstep_boundary(build: Backend) -> None:
+def test_a_run_saves_a_checkpoint_at_every_superstep_boundary(
+    build: Backend, *, async_client
+) -> None:
     async def scenario() -> list[dict]:
         runtime = build(_pipeline(Say("Wrote it.")))
-        async with _server(runtime) as surface:
+        async with _server(runtime, async_client=async_client) as surface:
             run = await _start(surface)
             run_id = str(run["runId"])
             await surface.read(run_id, "run.finished")
@@ -1392,7 +1434,9 @@ def test_a_run_saves_a_checkpoint_at_every_superstep_boundary(build: Backend) ->
     assert history[1]["values"] == {str(IMPLEMENTATION): "Wrote it."}
 
 
-def test_sending_a_run_back_forks_and_keeps_the_attempt_it_replaces(build: Backend) -> None:
+def test_sending_a_run_back_forks_and_keeps_the_attempt_it_replaces(
+    build: Backend, *, async_client
+) -> None:
     """"Send it back to implementation" resolved to a checkpoint, and appended.
 
     A destructive rewind would be cheaper and would throw away the thing the
@@ -1406,7 +1450,7 @@ def test_sending_a_run_back_forks_and_keeps_the_attempt_it_replaces(build: Backe
     runtime = build(_pipeline(Say("Wrote the code.")))
 
     async def scenario() -> dict[str, object]:
-        async with _server(runtime) as surface:
+        async with _server(runtime, async_client=async_client) as surface:
             run = await _start(surface)
             run_id = str(run["runId"])
             first = await surface.read(run_id, "run.finished")
@@ -1465,7 +1509,9 @@ def test_sending_a_run_back_forks_and_keeps_the_attempt_it_replaces(build: Backe
     assert runtime.entered(IMPLEMENTATION) == 2
 
 
-def test_a_node_selector_takes_the_latest_position(build: Backend) -> None:
+def test_a_node_selector_takes_the_latest_position(
+    build: Backend, *, async_client
+) -> None:
     """The ambiguity a node has, answered where it belongs.
 
     After one fork there are two checkpoints that were about to run
@@ -1477,7 +1523,7 @@ def test_a_node_selector_takes_the_latest_position(build: Backend) -> None:
 
     async def scenario() -> dict[str, object]:
         runtime = build(_pipeline(Say("Wrote the code.")))
-        async with _server(runtime) as surface:
+        async with _server(runtime, async_client=async_client) as surface:
             run = await _start(surface)
             run_id = str(run["runId"])
             transitions = f"/api/runs/{run_id}/transitions"
@@ -1514,7 +1560,9 @@ def test_a_node_selector_takes_the_latest_position(build: Backend) -> None:
     assert outcome["named"]["values"] == history[1]["values"]
 
 
-def test_a_failed_run_can_be_sent_back_and_run_again(build: Backend) -> None:
+def test_a_failed_run_can_be_sent_back_and_run_again(
+    build: Backend, *, async_client
+) -> None:
     """Recovery is the reason a failure leaves a resumable position behind."""
     graph = ScriptedGraph(
         GRAPH,
@@ -1531,7 +1579,7 @@ def test_a_failed_run_can_be_sent_back_and_run_again(build: Backend) -> None:
     )
 
     async def scenario() -> tuple[list[dict], dict]:
-        async with _server(build(graph)) as surface:
+        async with _server(build(graph), async_client=async_client) as surface:
             run = await _start(surface)
             run_id = str(run["runId"])
             failed = await surface.read(run_id, "run.failed")
@@ -1551,12 +1599,14 @@ def test_a_failed_run_can_be_sent_back_and_run_again(build: Backend) -> None:
     assert reverted["nextNodes"] == [str(IMPLEMENTATION)]
 
 
-def test_a_resume_can_interrupt_a_superstep_that_is_still_running(build: Backend) -> None:
+def test_a_resume_can_interrupt_a_superstep_that_is_still_running(
+    build: Backend, *, async_client
+) -> None:
     """Reverting is not something only a finished run can be asked for."""
     graph = _pipeline(Say("Reading the tree."), AwaitSteering(), Say("Never reached."))
 
     async def scenario() -> tuple[dict, list[dict]]:
-        async with _server(build(graph)) as surface:
+        async with _server(build(graph), async_client=async_client) as surface:
             run = await _start(surface)
             run_id = str(run["runId"])
             waiting = await surface.read(run_id, "transcript")
@@ -1577,7 +1627,9 @@ def test_a_resume_can_interrupt_a_superstep_that_is_still_running(build: Backend
     assert restarted[-1]["nodeId"] == str(IMPLEMENTATION)
 
 
-def test_two_resumes_arriving_at_once_do_not_leave_two_executors(build: Backend) -> None:
+def test_two_resumes_arriving_at_once_do_not_leave_two_executors(
+    build: Backend, *, async_client
+) -> None:
     """`resume_from` says anything in flight is stopped first, so it has to be.
 
     Stopping is asynchronous -- something is cancelled and waited for -- so the
@@ -1594,7 +1646,7 @@ def test_two_resumes_arriving_at_once_do_not_leave_two_executors(build: Backend)
     runtime = build(graph)
 
     async def scenario() -> dict[str, object]:
-        async with _server(runtime) as surface:
+        async with _server(runtime, async_client=async_client) as surface:
             run = await _start(surface)
             run_id = str(run["runId"])
             await surface.read(run_id, "transcript")
@@ -1627,11 +1679,13 @@ def test_two_resumes_arriving_at_once_do_not_leave_two_executors(build: Backend)
     )
 
 
-def test_a_transition_the_runtime_cannot_resolve_is_refused(build: Backend) -> None:
+def test_a_transition_the_runtime_cannot_resolve_is_refused(
+    build: Backend, *, async_client
+) -> None:
     graph = _pipeline(Fail("codex is out of quota"))
 
     async def scenario() -> dict[str, httpx.Response]:
-        async with _server(build(graph)) as surface:
+        async with _server(build(graph), async_client=async_client) as surface:
             run = await _start(surface)
             run_id = str(run["runId"])
             transitions = f"/api/runs/{run_id}/transitions"
@@ -1679,7 +1733,9 @@ def test_a_transition_the_runtime_cannot_resolve_is_refused(build: Backend) -> N
 # --- subscribing to events -------------------------------------------------
 
 
-def test_the_feed_carries_transcript_events_and_tool_calls(build: Backend) -> None:
+def test_the_feed_carries_transcript_events_and_tool_calls(
+    build: Backend, *, async_client
+) -> None:
     graph = _pipeline(
         Say("Reading the tree."),
         Call("shell", {"command": "pytest"}, result="14 passed"),
@@ -1687,7 +1743,7 @@ def test_the_feed_carries_transcript_events_and_tool_calls(build: Backend) -> No
     )
 
     async def scenario() -> list[dict]:
-        async with _server(build(graph)) as surface:
+        async with _server(build(graph), async_client=async_client) as surface:
             run = await _start(surface)
             return await surface.read(str(run["runId"]), "run.finished")
 
@@ -1723,7 +1779,9 @@ def test_the_feed_carries_transcript_events_and_tool_calls(build: Backend) -> No
     assert result["payload"]["result"] == "14 passed"
 
 
-def test_one_open_subscription_sees_the_run_it_watched_finish_and_start_again(build: Backend) -> None:
+def test_one_open_subscription_sees_the_run_it_watched_finish_and_start_again(
+    build: Backend, *, async_client
+) -> None:
     """The feed outlives `run.finished`, on the feed rather than on a reconnect.
 
     A subscription that closed itself on the terminal event would still pass a
@@ -1734,7 +1792,7 @@ def test_one_open_subscription_sees_the_run_it_watched_finish_and_start_again(bu
 
     async def scenario() -> list[dict]:
         runtime = build(_pipeline(Say("Wrote the code.")))
-        async with _server(runtime) as surface:
+        async with _server(runtime, async_client=async_client) as surface:
             run = await _start(surface)
             run_id = str(run["runId"])
             async with surface.subscribe(run_id) as feed:
@@ -1752,7 +1810,9 @@ def test_one_open_subscription_sees_the_run_it_watched_finish_and_start_again(bu
     assert after[-1]["nodeId"] == str(IMPLEMENTATION)
 
 
-def test_two_subscribers_at_different_cursors_each_see_the_whole_run(build: Backend) -> None:
+def test_two_subscribers_at_different_cursors_each_see_the_whole_run(
+    build: Backend, *, async_client
+) -> None:
     """Fan-out is the log's job, so more than one reader has to be real.
 
     Two feeds open at once on the same run, one from the beginning and one from
@@ -1763,7 +1823,7 @@ def test_two_subscribers_at_different_cursors_each_see_the_whole_run(build: Back
     graph = _pipeline(Say("Reading the tree."), AwaitSteering(), Say("Renamed it."))
 
     async def scenario() -> tuple[list[dict], list[dict]]:
-        async with _server(build(graph)) as surface:
+        async with _server(build(graph), async_client=async_client) as surface:
             run = await _start(surface)
             run_id = str(run["runId"])
             async with surface.subscribe(run_id) as first:
@@ -1789,11 +1849,13 @@ def test_two_subscribers_at_different_cursors_each_see_the_whole_run(build: Back
     assert late[0]["sequence"] == whole[len(whole) - len(late)]["sequence"]
 
 
-def test_a_subscriber_replays_from_its_own_cursor(build: Backend) -> None:
+def test_a_subscriber_replays_from_its_own_cursor(
+    build: Backend, *, async_client
+) -> None:
     """A reconnecting client asks for what it missed, not for everything."""
 
     async def scenario() -> tuple[list[dict], list[dict], httpx.Response]:
-        async with _server(build(_pipeline(Say("Done.")))) as surface:
+        async with _server(build(_pipeline(Say("Done."))), async_client=async_client) as surface:
             run = await _start(surface)
             run_id = str(run["runId"])
             everything = await surface.read(run_id, "run.finished")
@@ -1813,9 +1875,11 @@ def test_a_subscriber_replays_from_its_own_cursor(build: Backend) -> None:
     assert refused.json() == {"error": "cursor must be an integer"}
 
 
-def test_a_cursor_before_the_beginning_is_refused(build: Backend) -> None:
+def test_a_cursor_before_the_beginning_is_refused(
+    build: Backend, *, async_client
+) -> None:
     async def scenario() -> httpx.Response:
-        async with _server(build(_pipeline(Say("Done.")))) as surface:
+        async with _server(build(_pipeline(Say("Done."))), async_client=async_client) as surface:
             run = await _start(surface)
             return await surface.client.get(
                 f"/api/runs/{run['runId']}/events", params={"cursor": "-1"}
@@ -1827,11 +1891,13 @@ def test_a_cursor_before_the_beginning_is_refused(build: Backend) -> None:
     assert refused.json() == {"error": "cursor must not be negative"}
 
 
-def test_a_browser_reconnects_with_the_event_id_it_last_saw(build: Backend) -> None:
+def test_a_browser_reconnects_with_the_event_id_it_last_saw(
+    build: Backend, *, async_client
+) -> None:
     """`Last-Event-ID` is what EventSource sends; honouring it avoids a poll."""
 
     async def scenario() -> tuple[list[dict], dict]:
-        async with _server(build(_pipeline(Say("Done.")))) as surface:
+        async with _server(build(_pipeline(Say("Done."))), async_client=async_client) as surface:
             run = await _start(surface)
             run_id = str(run["runId"])
             everything = await surface.read(run_id, "run.finished")
@@ -1847,7 +1913,9 @@ def test_a_browser_reconnects_with_the_event_id_it_last_saw(build: Backend) -> N
     assert first["type"] == "run.finished"
 
 
-def test_an_explicit_cursor_beats_the_header_even_when_it_is_empty(build: Backend) -> None:
+def test_an_explicit_cursor_beats_the_header_even_when_it_is_empty(
+    build: Backend, *, async_client
+) -> None:
     """An empty `cursor` is a position -- the beginning -- not an absent one.
 
     A client that says `?cursor=` is asking to replay the run from the start,
@@ -1856,7 +1924,7 @@ def test_an_explicit_cursor_beats_the_header_even_when_it_is_empty(build: Backen
     """
 
     async def scenario() -> tuple[list[dict], dict]:
-        async with _server(build(_pipeline(Say("Done.")))) as surface:
+        async with _server(build(_pipeline(Say("Done."))), async_client=async_client) as surface:
             run = await _start(surface)
             run_id = str(run["runId"])
             everything = await surface.read(run_id, "run.finished")
@@ -1883,9 +1951,11 @@ def test_an_explicit_cursor_beats_the_header_even_when_it_is_empty(build: Backen
         ({"graphId": str(GRAPH), "values": []}, "values must be an object"),
     ],
 )
-def test_starting_a_run_refuses_a_body_it_cannot_read(build: Backend, body: dict[str, object], message: str) -> None:
+def test_starting_a_run_refuses_a_body_it_cannot_read(
+    build: Backend, body: dict[str, object], message: str, *, async_client
+) -> None:
     async def scenario() -> httpx.Response:
-        async with _server(build(_pipeline(Say("Done.")))) as surface:
+        async with _server(build(_pipeline(Say("Done."))), async_client=async_client) as surface:
             return await surface.client.post("/api/runs", json=body)
 
     refused = asyncio.run(scenario())
@@ -1897,7 +1967,9 @@ def test_starting_a_run_refuses_a_body_it_cannot_read(build: Backend, body: dict
 @pytest.mark.parametrize(
     "body", [b"not json", b'{"graphId": "\xff"}'], ids=["unparseable", "not utf-8"]
 )
-def test_a_body_that_is_not_json_at_all_is_still_a_400(build: Backend, body: bytes) -> None:
+def test_a_body_that_is_not_json_at_all_is_still_a_400(
+    build: Backend, body: bytes, *, async_client
+) -> None:
     """Including one that is not even text.
 
     Starlette hands raw bytes to `json.loads`, which decodes them itself, so a
@@ -1906,7 +1978,7 @@ def test_a_body_that_is_not_json_at_all_is_still_a_400(build: Backend, body: byt
     """
 
     async def scenario() -> httpx.Response:
-        async with _server(build(_pipeline(Say("Done.")))) as surface:
+        async with _server(build(_pipeline(Say("Done."))), async_client=async_client) as surface:
             return await surface.client.post(
                 "/api/runs",
                 content=body,
@@ -1919,7 +1991,9 @@ def test_a_body_that_is_not_json_at_all_is_still_a_400(build: Backend, body: byt
     assert refused.json() == {"error": "graphId must be a non-empty string"}
 
 
-def test_polling_projects_display_values_and_full_state_is_explicit(build: Backend) -> None:
+def test_polling_projects_display_values_and_full_state_is_explicit(
+    build: Backend, *, async_client
+) -> None:
     runtime = build(_pipeline(Ask("Proceed?")))
     values = {
         "workspaceId": "workspace-1",
@@ -1930,7 +2004,7 @@ def test_polling_projects_display_values_and_full_state_is_explicit(build: Backe
     }
 
     async def scenario():
-        async with _server(runtime) as surface:
+        async with _server(runtime, async_client=async_client) as surface:
             started = await surface.client.post("/api/runs", json={"graphId": str(GRAPH), "values": values})
             run_id = started.json()["runId"]
             await surface.read(run_id, "approval.requested")
@@ -1951,9 +2025,11 @@ def test_polling_projects_display_values_and_full_state_is_explicit(build: Backe
     assert poll["nextNodes"] == full["nextNodes"]
 
 
-def test_transition_queues_instruction_before_restarted_node_runs(build: Backend) -> None:
+def test_transition_queues_instruction_before_restarted_node_runs(
+    build: Backend, *, async_client
+) -> None:
     async def scenario() -> None:
-        async with _server(build(_pipeline(Say("Done immediately.")))) as surface:
+        async with _server(build(_pipeline(Say("Done immediately."))), async_client=async_client) as surface:
             run_id = str((await _start(surface))["runId"])
             first = await surface.read(run_id, "run.finished")
             response = await surface.client.post(
@@ -1977,9 +2053,11 @@ def test_transition_queues_instruction_before_restarted_node_runs(build: Backend
 
 @pytest.mark.parametrize("payload", [{"node": "implementation", "message": " "},
                                       {"checkpoint": "unknown", "message": "Fix it"}])
-def test_invalid_transition_message_does_not_fork(build: Backend, payload: dict) -> None:
+def test_invalid_transition_message_does_not_fork(
+    build: Backend, payload: dict, *, async_client
+) -> None:
     async def scenario() -> None:
-        async with _server(build(_pipeline(Say("Done.")))) as surface:
+        async with _server(build(_pipeline(Say("Done."))), async_client=async_client) as surface:
             run_id = str((await _start(surface))["runId"])
             await surface.read(run_id, "run.finished")
             before = await _checkpoints(surface, run_id)

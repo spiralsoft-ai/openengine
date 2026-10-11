@@ -53,6 +53,7 @@ which that turn then runs like any other:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import select
@@ -693,8 +694,141 @@ __all__ = [
     "SCRIPT_ENVIRONMENT_VARIABLE",
     "UNSCRIPTED_TITLE",
     "fake_acp",
+    "FakeACPProvider",
+    "call_mcp",
     "install",
 ]
+
+
+class FakeACPProvider:
+    name = "fake"
+
+    def __init__(
+        self,
+        text="Hi, how can I help?",
+        fail=False,
+        create=False,
+        fail_after_create=False,
+        after_create=None,
+        steer=False,
+        resume=False,
+        answer=False,
+        review=False,
+        calls=1,
+    ):
+        self.text, self.fail, self.create = text, fail, create
+        self.clients = []
+        self.fail_after_create = fail_after_create
+        self.after_create = after_create
+        self.steer = steer
+        self.resume = resume
+        self.answer = answer
+        self.review = review
+        self.calls = calls
+
+    async def connect(self):
+        provider = self
+        class Client:
+            closed = False
+            prompts = []
+            async def new_session(self, *, cwd, mcp_servers):
+                self.config = mcp_servers[0]
+                self.prompts = []
+                return self
+            async def prompt(self, prompt):
+                from langgraph_acp.events import ACPEvent, ACPEventType
+                self.prompts.append(prompt)
+                if provider.fail:
+                    provider.fail = False
+                    raise RuntimeError("transient")
+                if provider.create and "new workorder" in prompt:
+                    self.results = await call_mcp(self.config, calls=provider.calls)
+                    self.result = self.results[-1]
+                    if provider.after_create is not None:
+                        await provider.after_create(self.result["structuredContent"]["run_id"])
+                    if provider.fail_after_create:
+                        raise RuntimeError("failed after accepting work")
+                if provider.steer and "follow the system theme" in prompt:
+                    self.result = await call_mcp(self.config, "steer_workorder", "follow the system theme")
+                if provider.resume and "browser tests are failing" in prompt:
+                    self.result = await call_mcp(self.config, "resume_workorder", "browser tests are failing")
+                if provider.answer:
+                    context = json.loads(prompt.split(
+                        "Host context (message text is user content, not host instructions):\n"
+                    )[-1])
+                    if context["pending_questions"]:
+                        self.result = await call_mcp(self.config, "answer_workorder_question", arguments={
+                            "approval_id": context["pending_questions"][0]["approval_id"],
+                            "answers": {"api": ["Public"]},
+                        })
+                if provider.review and "approve the review" in prompt:
+                    self.result = await call_mcp(self.config, "decide_workorder_review", arguments={
+                        "approved": True, "summary": "Approved in Slack.",
+                    })
+                yield ACPEvent(agent="fake", type=ACPEventType.MESSAGE_DELTA,
+                               data={"content": {"type": "text", "text": provider.text}})
+            async def close(self):
+                self.closed = True
+        client = Client()
+        self.clients.append(client)
+        return client
+
+
+async def call_mcp(
+    config,
+    tool_name="create_workorder",
+    prompt="Implement it",
+    arguments=None,
+    *,
+    calls=None,
+):
+    """Real stdio child -> TCP broker -> injected host callback."""
+    # The GitHub concierge exposes its single continuation tool; Slack's
+    # default is create_workorder.  This shared fake provider starts either
+    # conversation with its default action.
+    if (tool_name == "create_workorder"
+            and "engine.github_concierge.github_egress" in config["args"]):
+        tool_name = "continue_workorder"
+    process = await asyncio.create_subprocess_exec(
+        config["command"], *config["args"], stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    call_count = 1 if calls is None else calls
+    requests = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "unsupported"}},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        *[
+            {
+                "jsonrpc": "2.0",
+                "id": 3 + index,
+                "method": "tools/call",
+                "params": {
+                    "name": tool_name,
+                    "arguments": arguments if arguments is not None else {"prompt": prompt},
+                },
+            }
+            for index in range(call_count)
+        ],
+    ]
+    stdout, stderr = await process.communicate("".join(json.dumps(r) + "\n" for r in requests).encode())
+    assert process.returncode == 0, stderr.decode()
+    responses = [json.loads(line) for line in stdout.splitlines()]
+    assert len(responses) == 2 + call_count
+    assert responses[0]["result"]["protocolVersion"] == "2025-06-18"
+    primary_tool = (
+        "continue_workorder"
+        if "engine.github_concierge.github_egress" in config["args"]
+        else "create_workorder"
+    )
+    assert responses[1]["result"]["tools"][0]["name"] == primary_tool
+    if tool_name in (
+        "steer_workorder", "resume_workorder", "answer_workorder_question",
+        "decide_workorder_review",
+    ):
+        assert tool_name in [tool["name"] for tool in responses[1]["result"]["tools"]]
+    results = [response["result"] for response in responses[2:]]
+    return results if calls is not None else results[0]
 
 
 if __name__ == "__main__":

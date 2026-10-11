@@ -27,19 +27,13 @@ def _git(repository: Path, *arguments: str) -> str:
     ).stdout.strip()
 
 
-def _repository(path: Path, branch: str = "main") -> None:
-    path.mkdir()
-    _git(path, "init", "-b", branch)
-    (path / "README.md").write_text("engine\n")
-    _git(path, "add", "README.md")
-    _git(path, *_IDENTITY, "commit", "-m", "initial")
-
-
-def test_origin_main_is_refreshed_without_moving_local_main(tmp_path: Path) -> None:
+def test_origin_main_is_refreshed_without_moving_local_main(
+    tmp_path: Path, *, git_repo
+) -> None:
     upstream = tmp_path / "upstream"
     remote = tmp_path / "remote.git"
     repository = tmp_path / "repository"
-    _repository(upstream)
+    git_repo(upstream, commit=True)
     subprocess.run(
         ["git", "clone", "--bare", str(upstream), str(remote)],
         check=True,
@@ -69,11 +63,13 @@ def test_origin_main_is_refreshed_without_moving_local_main(tmp_path: Path) -> N
     assert not _git(repository, "for-each-ref", "refs/engine/provisioning")
 
 
-def test_origin_branch_is_refreshed_without_moving_the_local_branch(tmp_path: Path) -> None:
+def test_origin_branch_is_refreshed_without_moving_the_local_branch(
+    tmp_path: Path, *, git_repo
+) -> None:
     upstream = tmp_path / "upstream"
     remote = tmp_path / "remote.git"
     repository = tmp_path / "repository"
-    _repository(upstream, "master")
+    git_repo(upstream, "master", commit=True)
     subprocess.run(
         ["git", "clone", "--bare", str(upstream), str(remote)],
         check=True,
@@ -102,11 +98,13 @@ def test_origin_branch_is_refreshed_without_moving_the_local_branch(tmp_path: Pa
     assert Path(workspace.root_path, "latest.txt").read_text() == "from remote master\n"
 
 
-def test_missing_origin_branch_explains_how_to_fix_configuration(tmp_path: Path) -> None:
+def test_missing_origin_branch_explains_how_to_fix_configuration(
+    tmp_path: Path, *, git_repo
+) -> None:
     upstream = tmp_path / "upstream"
     remote = tmp_path / "remote.git"
     repository = tmp_path / "repository"
-    _repository(upstream)
+    git_repo(upstream, commit=True)
     subprocess.run(
         ["git", "clone", "--bare", str(upstream), str(remote)],
         check=True,
@@ -131,11 +129,13 @@ def test_missing_origin_branch_explains_how_to_fix_configuration(tmp_path: Path)
         asyncio.run(provider.provision(str(repository), "origin/master"))
 
 
-def test_origin_head_follows_the_remote_default_branch(tmp_path: Path) -> None:
+def test_origin_head_follows_the_remote_default_branch(
+    tmp_path: Path, *, git_repo
+) -> None:
     upstream = tmp_path / "upstream"
     remote = tmp_path / "remote.git"
     repository = tmp_path / "repository"
-    _repository(upstream, "trunk")
+    git_repo(upstream, "trunk", commit=True)
     subprocess.run(
         ["git", "clone", "--bare", str(upstream), str(remote)],
         check=True,
@@ -155,9 +155,11 @@ def test_origin_head_follows_the_remote_default_branch(tmp_path: Path) -> None:
     assert _git(Path(workspace.root_path), "rev-parse", "HEAD") == _git(upstream, "rev-parse", "trunk")
 
 
-def test_origin_head_without_an_origin_uses_the_checked_out_commit(tmp_path: Path) -> None:
+def test_origin_head_without_an_origin_uses_the_checked_out_commit(
+    tmp_path: Path, *, git_repo
+) -> None:
     repository = tmp_path / "repository"
-    _repository(repository, "trunk")
+    git_repo(repository, "trunk", commit=True)
     provider = GitWorktreeWorkspaceProvider(str(tmp_path / "worktrees"))
 
     workspace = asyncio.run(provider.provision(str(repository), DEFAULT_BRANCH_REF))
@@ -165,9 +167,9 @@ def test_origin_head_without_an_origin_uses_the_checked_out_commit(tmp_path: Pat
     assert _git(Path(workspace.root_path), "rev-parse", "HEAD") == _git(repository, "rev-parse", "HEAD")
 
 
-def test_each_workspace_is_a_distinct_worktree(tmp_path: Path) -> None:
+def test_each_workspace_is_a_distinct_worktree(tmp_path: Path, *, git_repo) -> None:
     repository = tmp_path / "repository"
-    _repository(repository)
+    git_repo(repository, commit=True)
     provider = GitWorktreeWorkspaceProvider(str(tmp_path / "worktrees"))
 
     first = asyncio.run(provider.provision(str(repository), "HEAD"))
@@ -182,9 +184,9 @@ def test_each_workspace_is_a_distinct_worktree(tmp_path: Path) -> None:
     assert asyncio.run(provider.root_path(first.workspace_id)) == first.root_path
 
 
-def test_dispose_takes_the_work_with_it(tmp_path: Path) -> None:
+def test_dispose_takes_the_work_with_it(tmp_path: Path, *, git_repo) -> None:
     repository = tmp_path / "repository"
-    _repository(repository)
+    git_repo(repository, commit=True)
     provider = GitWorktreeWorkspaceProvider(str(tmp_path / "worktrees"))
     workspace = asyncio.run(provider.provision(str(repository), "HEAD"))
 
@@ -196,10 +198,10 @@ def test_dispose_takes_the_work_with_it(tmp_path: Path) -> None:
 
 
 def test_detaching_keeps_the_branch_and_reattaching_restores_the_work(
-    tmp_path: Path,
+    tmp_path: Path, *, git_repo
 ) -> None:
     repository = tmp_path / "repository"
-    _repository(repository)
+    git_repo(repository, commit=True)
     provider = GitWorktreeWorkspaceProvider(str(tmp_path / "worktrees"))
     workspace = asyncio.run(provider.provision(str(repository), "HEAD"))
     Path(workspace.root_path, "agent.md").write_text("what the agent did\n")
@@ -222,9 +224,11 @@ def test_detaching_keeps_the_branch_and_reattaching_restores_the_work(
     assert _git(Path(reattached.root_path), "branch", "--show-current") == workspace.ref
 
 
-def test_detaching_preserves_work_after_switching_to_a_publishing_branch(tmp_path: Path) -> None:
+def test_detaching_preserves_work_after_switching_to_a_publishing_branch(
+    tmp_path: Path, *, git_repo
+) -> None:
     repository = tmp_path / "repo"
-    _repository(repository)
+    git_repo(repository, commit=True)
     provider = GitWorktreeWorkspaceProvider(str(tmp_path / "worktrees"))
     workspace = asyncio.run(provider.provision(str(repository), "main"))
     root = Path(workspace.root_path)
@@ -245,9 +249,11 @@ def test_detaching_preserves_work_after_switching_to_a_publishing_branch(tmp_pat
     )
 
 
-def test_detach_is_idempotent_and_leaves_committed_work_alone(tmp_path: Path) -> None:
+def test_detach_is_idempotent_and_leaves_committed_work_alone(
+    tmp_path: Path, *, git_repo
+) -> None:
     repository = tmp_path / "repository"
-    _repository(repository)
+    git_repo(repository, commit=True)
     provider = GitWorktreeWorkspaceProvider(str(tmp_path / "worktrees"))
     workspace = asyncio.run(provider.provision(str(repository), "HEAD"))
     root_path = Path(workspace.root_path)
@@ -264,13 +270,13 @@ def test_detach_is_idempotent_and_leaves_committed_work_alone(tmp_path: Path) ->
 
 
 def test_work_is_snapshotted_even_where_git_has_no_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, git_repo
 ) -> None:
     """A machine that has never run `git config user.email` still detaches."""
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "absent-global"))
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(tmp_path / "absent-system"))
     repository = tmp_path / "repository"
-    _repository(repository)
+    git_repo(repository, commit=True)
     provider = GitWorktreeWorkspaceProvider(str(tmp_path / "worktrees"))
     workspace = asyncio.run(provider.provision(str(repository), "HEAD"))
     Path(workspace.root_path, "agent.md").write_text("what the agent did\n")
@@ -281,11 +287,11 @@ def test_work_is_snapshotted_even_where_git_has_no_identity(
 
 
 def test_reattaching_a_branch_someone_is_reading_says_where_it_went(
-    tmp_path: Path,
+    tmp_path: Path, *, git_repo
 ) -> None:
     """Reviewing the work is the point of the branch, so say how to hand it back."""
     repository = tmp_path / "repository"
-    _repository(repository)
+    git_repo(repository, commit=True)
     provider = GitWorktreeWorkspaceProvider(str(tmp_path / "worktrees"))
     workspace = asyncio.run(provider.provision(str(repository), "HEAD"))
     asyncio.run(provider.detach(workspace.workspace_id))
@@ -305,11 +311,11 @@ def test_reattaching_a_branch_someone_is_reading_says_where_it_went(
 
 
 def test_the_branch_a_workspace_is_already_on_is_not_in_use_by_someone_else(
-    tmp_path: Path,
+    tmp_path: Path, *, git_repo
 ) -> None:
     """The workspace's own checkout must not read as a stranger holding it."""
     repository = tmp_path / "repository"
-    _repository(repository)
+    git_repo(repository, commit=True)
     provider = GitWorktreeWorkspaceProvider(str(tmp_path / "worktrees"))
     workspace = asyncio.run(provider.provision(str(repository), "HEAD"))
 
@@ -320,10 +326,12 @@ def test_the_branch_a_workspace_is_already_on_is_not_in_use_by_someone_else(
     assert reattached.root_path == workspace.root_path
 
 
-def test_attach_replaces_a_checkout_deleted_behind_gits_back(tmp_path: Path) -> None:
+def test_attach_replaces_a_checkout_deleted_behind_gits_back(
+    tmp_path: Path, *, git_repo
+) -> None:
     """A swept /tmp leaves an administrative entry that would refuse a new one."""
     repository = tmp_path / "repository"
-    _repository(repository)
+    git_repo(repository, commit=True)
     provider = GitWorktreeWorkspaceProvider(str(tmp_path / "worktrees"))
     workspace = asyncio.run(provider.provision(str(repository), "HEAD"))
     shutil.rmtree(workspace.root_path)
@@ -336,9 +344,11 @@ def test_attach_replaces_a_checkout_deleted_behind_gits_back(tmp_path: Path) -> 
     assert Path(reattached.root_path, "README.md").read_text() == "engine\n"
 
 
-def test_attach_checks_out_afresh_when_even_the_branch_is_gone(tmp_path: Path) -> None:
+def test_attach_checks_out_afresh_when_even_the_branch_is_gone(
+    tmp_path: Path, *, git_repo
+) -> None:
     repository = tmp_path / "repository"
-    _repository(repository)
+    git_repo(repository, commit=True)
     provider = GitWorktreeWorkspaceProvider(str(tmp_path / "worktrees"))
     workspace = asyncio.run(provider.provision(str(repository), "HEAD"))
     asyncio.run(provider.dispose(workspace.workspace_id))
@@ -351,9 +361,9 @@ def test_attach_checks_out_afresh_when_even_the_branch_is_gone(tmp_path: Path) -
     assert Path(reattached.root_path, "README.md").read_text() == "engine\n"
 
 
-def test_attach_is_idempotent(tmp_path: Path) -> None:
+def test_attach_is_idempotent(tmp_path: Path, *, git_repo) -> None:
     repository = tmp_path / "repository"
-    _repository(repository)
+    git_repo(repository, commit=True)
     provider = GitWorktreeWorkspaceProvider(str(tmp_path / "worktrees"))
     workspace = asyncio.run(provider.provision(str(repository), "HEAD"))
     Path(workspace.root_path, "scratch.txt").write_text("mid-turn\n")
@@ -382,9 +392,9 @@ def _commit(checkout: Path, *arguments: str) -> str:
     return _git(checkout, "log", "-1", "--format=%B")
 
 
-def test_commits_credit_the_co_author_once(tmp_path: Path) -> None:
+def test_commits_credit_the_co_author_once(tmp_path: Path, *, git_repo) -> None:
     repository = tmp_path / "repository"
-    _repository(repository)
+    git_repo(repository, commit=True)
     hooks = repository / ".git" / "hooks"
     # The repository's own hooks keep running in the credited checkout.
     (hooks / "commit-msg").write_text('#!/bin/sh\necho "Checked-by: repo" >> "$1"\n')
@@ -408,9 +418,9 @@ def test_commits_credit_the_co_author_once(tmp_path: Path) -> None:
     assert "Co-authored-by" not in _commit(repository, "-m", "chore: mine")
 
 
-def test_reattaching_keeps_crediting_the_co_author(tmp_path: Path) -> None:
+def test_reattaching_keeps_crediting_the_co_author(tmp_path: Path, *, git_repo) -> None:
     repository = tmp_path / "repository"
-    _repository(repository)
+    git_repo(repository, commit=True)
     provider = GitWorktreeWorkspaceProvider(str(tmp_path / "worktrees"))
     workspace = asyncio.run(
         provider.provision(str(repository), "HEAD", co_author=_CO_AUTHOR)
@@ -427,9 +437,9 @@ def test_reattaching_keeps_crediting_the_co_author(tmp_path: Path) -> None:
     assert f"Co-authored-by: {_CO_AUTHOR}" in message
 
 
-def test_the_detach_snapshot_credits_the_co_author(tmp_path: Path) -> None:
+def test_the_detach_snapshot_credits_the_co_author(tmp_path: Path, *, git_repo) -> None:
     repository = tmp_path / "repository"
-    _repository(repository)
+    git_repo(repository, commit=True)
     provider = GitWorktreeWorkspaceProvider(str(tmp_path / "worktrees"))
     workspace = asyncio.run(
         provider.provision(str(repository), "HEAD", co_author=_CO_AUTHOR)
@@ -442,9 +452,9 @@ def test_the_detach_snapshot_credits_the_co_author(tmp_path: Path) -> None:
     assert message.count(f"Co-authored-by: {_CO_AUTHOR}") == 1
 
 
-def test_no_co_author_adds_no_trailer(tmp_path: Path) -> None:
+def test_no_co_author_adds_no_trailer(tmp_path: Path, *, git_repo) -> None:
     repository = tmp_path / "repository"
-    _repository(repository)
+    git_repo(repository, commit=True)
     provider = GitWorktreeWorkspaceProvider(str(tmp_path / "worktrees"))
     workspace = asyncio.run(provider.provision(str(repository), "HEAD"))
 
@@ -452,9 +462,11 @@ def test_no_co_author_adds_no_trailer(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("issue_repo,reference", [("acme/api", "#7"), ("acme/other", "acme/other#7")])
-def test_issue_references_survive_commit_amend_snapshot_and_reattach(tmp_path, issue_repo, reference):
+def test_issue_references_survive_commit_amend_snapshot_and_reattach(
+    tmp_path, issue_repo, reference, *, git_repo
+):
     repository = tmp_path / "repository"
-    _repository(repository)
+    git_repo(repository, commit=True)
     _git(repository, "remote", "add", "origin", "https://github.com/acme/api.git")
     provider = GitWorktreeWorkspaceProvider(str(tmp_path / "worktrees"))
     issue = {"repository": issue_repo, "number": 7}

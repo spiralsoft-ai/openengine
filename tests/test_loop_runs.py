@@ -6,10 +6,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from starlette.testclient import TestClient
 
-from engine.adapters.state_store.sqlite import SQLiteStateStore
-from engine.apps.web.api import create_app
 from engine.apps.web.loop_runs import (
     Loop,
     LoopHost,
@@ -21,7 +18,6 @@ from engine.apps.web.loop_runs import (
 )
 from engine.apps.web.loops import LoopSettings, LoopSettingsStore
 from engine.domain import RunId, RunPhase, RunState, TaskId, WorkflowId
-from engine.runtime import AgentSession, Capabilities
 
 NOON = datetime(2026, 10, 1, 12, 0, tzinfo=timezone(timedelta(hours=-6)))
 FORM = {
@@ -321,32 +317,23 @@ def test_spend_today_counts_only_todays_workorders(tmp_path) -> None:
     assert runner.capped(loop)
 
 
-def _app(tmp_path):
-    stub = object()
-    capabilities = Capabilities(
-        workflow_runtime=stub, source_control=stub, agent_runner=stub,
-        communications=stub, workspace_provider=stub,
-        state_store=SQLiteStateStore(str(tmp_path / "t.sqlite3")),
-    )
-    runners = {"codex": stub}
-    session = AgentSession(capabilities, profiles={}, runners=runners)
+def test_the_new_loop_form_creates_a_loop_that_says_when_it_runs(
+    tmp_path, *, client, sqlite_store, web_app
+) -> None:
     settings = LoopSettingsStore(tmp_path / "settings.json")
     settings.set(LoopSettings(active_hours_start="08:00", active_hours_end="18:00",
                               max_prs=4, max_daily_spend=7.5))
-    return create_app(session, runners, loop_settings=settings,
-                      loop_store=LoopStore(tmp_path / "loops.json"),
-                      loop_provider=ScriptedProvider([]))
-
-
-def test_the_new_loop_form_creates_a_loop_that_says_when_it_runs(tmp_path) -> None:
-    with TestClient(_app(tmp_path)) as client:
-        defaults = client.get("/api/loops/defaults").json()
-        created = client.post("/api/loops", json=FORM)
-        listed = client.get("/api/loops").json()["loops"]
-        fetched = client.get(f"/api/loops/{created.json()['loopId']}").json()
-        refused = client.post("/api/loops", json={**FORM, "prompt": ""})
-        deleted = client.delete(f"/api/loops/{created.json()['loopId']}")
-        after = client.get("/api/loops").json()["loops"]
+    app = web_app(runners={"codex": object()}, state_store=sqlite_store(),
+                   loop_settings=settings, loop_store=LoopStore(tmp_path / "loops.json"),
+                   loop_provider=ScriptedProvider([]))
+    with client(app) as browser:
+        defaults = browser.get("/api/loops/defaults").json()
+        created = browser.post("/api/loops", json=FORM)
+        listed = browser.get("/api/loops").json()["loops"]
+        fetched = browser.get(f"/api/loops/{created.json()['loopId']}").json()
+        refused = browser.post("/api/loops", json={**FORM, "prompt": ""})
+        deleted = browser.delete(f"/api/loops/{created.json()['loopId']}")
+        after = browser.get("/api/loops").json()["loops"]
 
     assert defaults == {"everyMinutes": 60, "activeHours": {"start": "08:00", "end": "18:00"},
                         "maxWorkOrders": 4, "maxDailySpend": 7.5}

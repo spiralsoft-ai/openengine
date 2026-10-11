@@ -5,7 +5,6 @@ from hashlib import sha256
 from pathlib import Path
 import shutil
 
-from engine.adapters.state_store.sqlite import SQLiteStateStore
 from engine.domain import AgentId, AgentInstanceId, Message, RunId, RunPhase
 
 
@@ -15,13 +14,15 @@ V0_DATABASE = (
 V0_SHA256 = "bb09ee6db190f9af9eaff7faec9823606a99c485bde8786631b26d2863650dc1"
 
 
-def test_v0_database_restores_history_and_accepts_new_writes(tmp_path: Path) -> None:
+def test_v0_database_restores_history_and_accepts_new_writes(
+    tmp_path: Path, *, sqlite_store
+) -> None:
     assert sha256(V0_DATABASE.read_bytes()).hexdigest() == V0_SHA256
     database = tmp_path / "conversations.sqlite3"
     shutil.copyfile(V0_DATABASE, database)
 
     async def scenario() -> None:
-        store = SQLiteStateStore(database)
+        store = sqlite_store(database)
         try:
             run = await store.load(RunId("run-seeded-history"))
             assert run is not None
