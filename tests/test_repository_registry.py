@@ -1,4 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from threading import Barrier, Event
 from unittest.mock import Mock
 
 import pytest
@@ -42,7 +44,13 @@ def test_invalid_add_does_not_publish(name, path, options):
 
 
 def test_concurrent_duplicate_add_has_one_winner(monkeypatch):
-    resolve = Mock(return_value="acme/new")
+    barrier = Barrier(8)
+
+    def project(path):
+        barrier.wait(timeout=5)
+        return "acme/new"
+
+    resolve = Mock(side_effect=project)
     monkeypatch.setattr(RepositoryRegistry, "_project", lambda self, path: resolve(path))
     registry = RepositoryRegistry(projects={})
 
@@ -55,5 +63,48 @@ def test_concurrent_duplicate_add_has_one_winner(monkeypatch):
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         assert sum(pool.map(add, range(20))) == 1
-    assert resolve.call_count == 1
+    assert resolve.call_count == 8
     assert len(registry.snapshot.repos) == 1
+
+
+@pytest.mark.parametrize("other_name", ["slow", "other"])
+def test_origin_resolution_does_not_block_readers_or_adds(monkeypatch, tmp_path, other_name):
+    resolving = Event()
+    release = Event()
+    slow_path = str(tmp_path / "slow")
+    other_path = str(tmp_path / "other")
+
+    def project(self, path):
+        if path == slow_path:
+            resolving.set()
+            assert release.wait(timeout=5)
+        return f"acme/{Path(path).name}"
+
+    monkeypatch.setattr(RepositoryRegistry, "_project", project)
+    registry = RepositoryRegistry(projects={})
+    before = registry.snapshot
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        slow = pool.submit(registry.add, "slow", slow_path)
+        try:
+            assert resolving.wait(timeout=5)
+            assert pool.submit(lambda: registry.snapshot).result(timeout=1) is before
+            pool.submit(
+                registry.add, other_name, other_path, mode="disconnected", trusted=True,
+            ).result(timeout=1)
+        finally:
+            release.set()
+        if other_name == "slow":
+            with pytest.raises(EngineConfigError, match="already exists"):
+                slow.result(timeout=5)
+        else:
+            slow.result(timeout=5)
+
+    snapshot = registry.snapshot
+    assert snapshot.repos[other_name] == other_path
+    assert snapshot.projects[other_name] == "acme/other"
+    assert snapshot.disconnected == snapshot.trusted == frozenset({tmp_path / "other"})
+    assert snapshot.trusted_repos == frozenset({other_name})
+    assert snapshot.login_repositories == (
+        ("acme/other",) if other_name == "slow" else ("acme/other", "acme/slow")
+    )
+    assert len(snapshot.repos) == (1 if other_name == "slow" else 2)

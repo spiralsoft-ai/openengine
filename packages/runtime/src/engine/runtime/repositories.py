@@ -100,13 +100,17 @@ class RepositoryRegistry:
             "repo_modes": {} if mode is None else {name: mode},
             "trusted_repos": {name: trusted},
         })
+        if name in self.snapshot.repos:
+            message = f"repos.{name} already exists"
+            raise EngineConfigError(message)
+        # Git may block; readers must remain free to acquire the snapshot lock.
+        project = self._project(path)
         with self._lock:
             previous = self._snapshot
             if name in previous.repos:
                 message = f"repos.{name} already exists"
                 raise EngineConfigError(message)
             projects = dict(previous.projects)
-            project = self._project(path)
             if project is not None:
                 projects[name] = project
             self._snapshot = self._build(
