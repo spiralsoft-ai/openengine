@@ -1,6 +1,6 @@
 [project]
 name = "engine-adapter-agent-runner-acp"
-version = "1.6.0"
+version = "1.7.0"
 description = "Agent Runner capability backed by ACP agents, reached through langgraph-acp."
 requires-python = ">=3.11"
 # The protocol is langgraph-acp's: this package only binds its providers to the

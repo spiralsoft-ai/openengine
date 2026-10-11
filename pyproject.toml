@@ -1,6 +1,6 @@
 [project]
 name = "engine-migrations"
-version = "1.6.0"
+version = "1.7.0"
 description = "Alembic migration histories for OpenEngine state stores."
 requires-python = ">=3.11"
 dependencies = ["alembic>=1.16", "sqlalchemy>=2.0"]

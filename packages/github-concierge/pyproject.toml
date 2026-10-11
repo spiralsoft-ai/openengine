@@ -1,6 +1,6 @@
 [project]
 name = "engine-github-concierge"
-version = "1.6.0"
+version = "1.7.0"
 description = "Pull-request conversation graph and its explicit egress boundary."
 requires-python = ">=3.11"
 dependencies = ["engine-domain", "engine-single-tool-mcp", "langgraph-acp", "langgraph>=1.0"]

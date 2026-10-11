@@ -1,6 +1,6 @@
 [project]
 name = "engine-domain"
-version = "1.6.0"
+version = "1.7.0"
 description = "Pure domain types for the agent engine. Zero third-party dependencies."
 requires-python = ">=3.11"
 # INVARIANT: this list must stay empty. Enforced by tests/test_boundaries.py.

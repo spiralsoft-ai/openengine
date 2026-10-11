@@ -1,6 +1,6 @@
 [project]
 name = "engine-adapter-state-store-postgres"
-version = "1.6.0"
+version = "1.7.0"
 description = "State Store capability backed by Postgres."
 requires-python = ">=3.11"
 dependencies = [

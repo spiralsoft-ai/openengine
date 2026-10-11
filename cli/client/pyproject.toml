@@ -1,6 +1,6 @@
 [project]
 name = "engine-graph-cli"
-version = "1.6.0"
+version = "1.7.0"
 description = "Terminal commands for registered graphs, runs, loops, nodes and the backends that serve them."
 requires-python = ">=3.11"
 # A client: it speaks HTTP to a backend and never starts a runtime itself.

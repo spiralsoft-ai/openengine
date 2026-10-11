@@ -1,6 +1,6 @@
 [project]
 name = "engine-adapter-source-control-github"
-version = "1.6.0"
+version = "1.7.0"
 description = "Source Control capability backed by GitHub."
 requires-python = ">=3.11"
 # Depends on the runtime (and through it ports + domain). Infrastructure SDKs

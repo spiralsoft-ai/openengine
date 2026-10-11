@@ -1,6 +1,6 @@
 [project]
 name = "engine-single-tool-mcp"
-version = "1.6.0"
+version = "1.7.0"
 description = "Transport for exposing one validated host callback over stdio MCP."
 requires-python = ">=3.11"
 # Nothing. The transport carries whatever a surface's tool returns without

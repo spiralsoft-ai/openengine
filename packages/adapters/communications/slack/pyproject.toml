@@ -1,6 +1,6 @@
 [project]
 name = "engine-adapter-communications-slack"
-version = "1.6.0"
+version = "1.7.0"
 description = "Communications capability backed by Slack."
 requires-python = ">=3.11"
 dependencies = ["engine-runtime", "httpx>=0.28", "keyring>=25"]
